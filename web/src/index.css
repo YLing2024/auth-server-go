@@ -1,0 +1,54 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+.auth-root {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+}
+
+/* 卡片头部：品牌在左、主题切换在右；窄屏可换行，不遮标题/输入框 */
+.auth-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.auth-theme {
+  margin-left: auto;
+}
+
+/* 窄屏：卡片占满可用宽度，且不产生横向滚动 */
+@media (max-width: 480px) {
+  .auth-root {
+    padding: 0;
+  }
+
+  .auth-card {
+    max-width: 100%;
+  }
+}
