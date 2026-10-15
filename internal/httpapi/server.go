@@ -37,6 +37,7 @@ type Server struct {
 	geo *geoResolver
 
 	mux     *http.ServeMux
+	handler http.Handler
 	assets  fs.FS
 	index   []byte
 	subject string
@@ -76,11 +77,12 @@ func New(cfg *config.Config, store *redis.Store, provider *oidc.Provider, public
 	}
 	provider.SetLoginPage(http.HandlerFunc(s.serveLoginIndex))
 	s.mux = s.routes()
+	s.handler = s.legacyCompat(s.mux)
 	return s, nil
 }
 
 // Handler returns the root http.Handler.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return s.handler }
 
 func (s *Server) log() *slog.Logger { return s.logger }
 
@@ -100,10 +102,11 @@ func (s *Server) routes() *http.ServeMux {
 }
 
 // handleRoot dispatches the OIDC endpoints (with the shared CORS layer) and
-// otherwise returns 404, exactly like the legacy router falling through.
+// otherwise answers with the legacy default 404 page, exactly like the legacy
+// router falling through to finalhandler.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if !isOIDCPath(r.URL.Path) {
-		http.NotFound(w, r)
+		writeLegacyNotFound(w, r.Method, expressResourceName(r))
 		return
 	}
 	w.Header().Set("Access-Control-Allow-Origin", "*")
