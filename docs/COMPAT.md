@@ -36,11 +36,15 @@
 
 ## 3. 行为差异（逐条列明）
 
-### 3.1 HTTP 方法不匹配
+### 3.1 HTTP 方法回退与未匹配路由
 
-- 旧：Express 未注册的动词落到 `oidc.router` 兜底，返回 **404**。
-- 新：注册了动词的方法不匹配时返回 **405** 并带 `Allow` 头（更符合 HTTP 语义）。
-- 影响：仅影响错误路径的状态码，正常流程无差别。例：`POST /jwks.json` 旧 404 / 新 405。
+- **已对齐**：动词不匹配、路径未匹配、HEAD 跟随 GET（POST-only 路径的 HEAD 落 404）、OPTIONS 两级
+  回退（六个旧模块路径 200 + `Allow` + 正文 `POST`，其余含未知路径 204 + CORS）、Express 默认 404
+  HTML 页（含 `encodeurl`/`escape-html`/`Content-Security-Policy`/`nosniff`）、尾斜杠容忍，全部逐行
+  复刻旧实现。实测对照表见 `docs/API.md` §5「方法回退与未匹配路由」，实现见
+  `internal/httpapi/legacy.go`。旧文档「新实现返回 405」的差异已消除。
+- **仅剩**：畸形百分号转义（如 `/a%zz`、`/a%2zb`）由 Go `net/http` 请求解析层直接拒绝为
+  `400 Bad Request`，旧实现在路由层回 `404`。这是 HTTP 解析层而非路由层的差异，改动前后一致。
 
 ### 3.2 畸形 JSON 请求体
 
@@ -53,6 +57,8 @@
 ### 3.3 响应头
 
 - 新实现不生成 Express 默认的 `ETag`；`Date` / `Content-Type` 等保持一致。
+- `/auth` 的 `Content-Type` 字符集大小写不同：旧 `text/html; charset=UTF-8`、新
+  `text/html; charset=utf-8`。仅大小写，语义等价。
 - 302 跳转复刻 Express 形状：`Location` + `Vary: Accept` + `text/plain; charset=utf-8`
   正文 `Found. Redirecting to <url>`。
 
@@ -66,6 +72,7 @@
 - 旧：`public/` 由部署期 nginx 直接伺服，auth-server 本身不发静态文件。
 - 新：登录页与资源**内嵌进二进制**（`/auth` + `/assets/*`），单文件即可自洽运行；
   产物与旧 `public/` 同源同字节。生产仍建议由 nginx 伺服静态资源。
+- `/assets/` 目录本身的 `HEAD`：旧由 nginx 语义回 404，新返回 200 目录响应；具体文件路径两者一致。
 
 ### 3.6 其它
 

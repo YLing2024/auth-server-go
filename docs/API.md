@@ -75,8 +75,9 @@
 | GET | `/assets/` | 公开 | 登录页构建产物静态资源 |
 | ANY | `/` | 公开 | 兜底 404 |
 
-> 说明：`/authorize`、`/token` 等 OIDC 路径同时接受 `GET` 与 `POST`（`/token` 仅 `POST`），其它方法返回
-> `405`。`/` 兜底对未知路径返回 `404`。
+> 说明：方法回退与未匹配路由**逐行复刻**旧 Express 实现，规则与实测对照表见 §5
+> 「方法回退与未匹配路由」。简言之：HEAD 跟随 GET；动词错误或路径未匹配返回 Express 默认 404 HTML
+> 页（不是 `405`）；OPTIONS 分两级回退（模块路由 200，其余 204）。
 
 OIDC 错误统一为 `{"error":"<code>","error_description":"<中文说明>"}`，HTTP 状态见各端点。
 
@@ -378,7 +379,48 @@ curl -s -o /dev/null -D - 'http://localhost:19260/end_session?post_logout_redire
 
 ### ANY /
 
-兜底：未知路径 `404 Not Found`；若路径属于 OIDC 端点则转交 OIDC 处理器并附加 CORS 头。
+兜底：未知路径返回 Express 默认 404 页；若路径属于 OIDC 端点则转交 OIDC 处理器并附加 CORS 头。
+
+#### 方法回退与未匹配路由
+
+本节是旧 Express 可观测行为的逐行复刻，对照表由隔离实例实测生成（旧实现 `127.0.0.1:19280`、
+新实现 `127.0.0.1:19282`，共用同一只读密钥副本与 `REDIS_DB=15`）；实现集中在
+`internal/httpapi/legacy.go`，单元测试见 `internal/httpapi/legacy_test.go`。
+
+- **HEAD 跟随 GET**：Express `Route._handles_method` 把 HEAD 归一化为 GET。GET 路由接受 HEAD
+  （net/http 自动去掉响应体、保留头与 `Content-Length`）；POST-only 路由的 HEAD 与其它错误动词一样
+  落到 404 页。
+- **OPTIONS 两级回退**：
+  - 旧模块路由（`/api/login`、`/api/setup`、`/api/reset`、`/api/totp/setup`、`/api/totp/login`、
+    `/api/totp/reset`）命中 Express 自动 OPTIONS：**200** + `Allow: POST` + 正文 `POST`（无 CORS 头）。
+  - 其余任何路径（含未注册路径，如 `OPTIONS /api/verify`、`OPTIONS /api/totp/confirm`）落到 OIDC
+    路由器的 CORS 中间件：**204**，空正文，带 `Access-Control-Allow-Origin: *`、
+    `Access-Control-Allow-Headers: Authorization, Content-Type`、
+    `Access-Control-Allow-Methods: GET, POST, OPTIONS`。
+- **未匹配 / 动词错误 → finalhandler 404**：正文是 Express 默认 HTML 文档，头为
+  `Content-Type: text/html; charset=utf-8`、`Content-Security-Policy: default-src 'none'`、
+  `X-Content-Type-Options: nosniff`、`Access-Control-Allow-Origin: *`。请求目标先经 `encodeurl`
+  再 `escape-html`（`& → &amp;`、`< → %3C`、`' → &#39;`、孤立 `%` → `%25`）。HEAD 保留
+  `Content-Length` 但空正文。
+- **尾斜杠容忍**：Express 默认 `strict=false`，`…/` 与无斜杠形式同义（`/assets/` 子树除外）。
+
+| 请求 | 状态 | Content-Type | Allow | CORS | 正文（HEAD 为空） |
+|---|---|---|---|---|---|
+| `OPTIONS /api/login` | 200 | `text/html; charset=utf-8` | POST | 无 | `POST` |
+| `OPTIONS /api/totp/reset` | 200 | `text/html; charset=utf-8` | POST | 无 | `POST` |
+| `OPTIONS /api/totp/confirm` | 204 | — | — | `*` | 空 |
+| `OPTIONS /api/verify` | 204 | — | — | `*` | 空 |
+| `OPTIONS /definitely-nope` | 204 | — | — | `*` | 空 |
+| `HEAD /api/verify` | 401 | `application/json; charset=utf-8` | — | 无 | 空（GET 处理器） |
+| `HEAD /jwks.json` | 200 | `application/json; charset=utf-8` | — | `*` | 空（GET 处理器） |
+| `HEAD /api/login` | 404 | `text/html; charset=utf-8` | — | `*` | 空（`Content-Length: 149`） |
+| `GET /definitely-nope` | 404 | `text/html; charset=utf-8` | — | `*` | `Cannot GET /definitely-nope`（CL=154） |
+| `PUT /api/login` | 404 | `text/html; charset=utf-8` | — | `*` | `Cannot PUT /api/login`（CL=148） |
+| `PUT /jwks.json` | 404 | `text/html; charset=utf-8` | — | `*` | `Cannot PUT /jwks.json`（CL=148） |
+
+> 残余差异（非本类问题，见 `docs/COMPAT.md` §3）：畸形百分号转义（如 `/a%zz`）由 Go `net/http`
+> 请求解析层直接拒绝为 `400 Bad Request`，旧实现在路由层回 `404`，改动前后一致；`HEAD /assets/`
+> 旧 404 / 新 200（静态目录语义）。
 
 ## 6. 数据模型约定
 
