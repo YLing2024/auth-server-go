@@ -1,0 +1,28 @@
+# 样例 systemd 单元（**仅样例**，本仓库不自动安装到 /etc）。
+#
+# 按需拷贝到 /etc/systemd/system/auth-server-go.service 后自行 `systemctl daemon-reload`
+# 再启动。真实部署请把 WorkingDirectory / DATA_DIR / ISSUER 换成实际值，且**不要**写进仓库。
+[Unit]
+Description=HomeAuth SSO auth server (Go rewrite, loopback 19260)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/auth-server-go
+Environment=HOST=127.0.0.1
+Environment=PORT=19260
+Environment=REDIS_HOST=127.0.0.1
+Environment=REDIS_PORT=6379
+Environment=REDIS_DB=0
+Environment=DATA_DIR=/var/lib/auth-server-go
+Environment=ISSUER=http://127.0.0.1:19260
+Environment=SSO_SUBJECT=linden
+Environment=AUTH_GEOIP_URL=https://ipwho.is/{ip}?fields=success,country,region,city
+Environment=ALLOWED_REDIRECT_ROOTS=
+ExecStart=/opt/auth-server-go/bin/auth-server-go
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
