@@ -51,16 +51,16 @@ func New(cfg *config.Config, store *redis.Store, provider *oidc.Provider, public
 		logger = slog.Default()
 	}
 	s := &Server{
-		cfg:           cfg,
-		store:         store,
-		oidc:          provider,
-		secrets:       totp.NewSecretStore(filepath.Join(cfg.DataDir, "totp-secret.json")),
-		pending:       totp.NewPendingStore(filepath.Join(cfg.DataDir, "totp-pending.json")),
-		logger:        logger,
-		appLimiter:    totp.NewRateLimiter(5, []int{60, 300, 900}),
-		moduleLimiter: totp.NewRateLimiter(5, []int{60, 300, 900}),
-		geo:           newGeoResolver(cfg.GeoIPURL, store),
-		subject:       cfg.Subject,
+		cfg:            cfg,
+		store:          store,
+		oidc:           provider,
+		secrets:        totp.NewSecretStore(filepath.Join(cfg.DataDir, "totp-secret.json")),
+		pending:        totp.NewPendingStore(filepath.Join(cfg.DataDir, "totp-pending.json")),
+		logger:         logger,
+		appLimiter:     totp.NewRateLimiter(5, []int{60, 300, 900}),
+		moduleLimiter:  totp.NewRateLimiter(5, []int{60, 300, 900}),
+		geo:            newGeoResolver(cfg.GeoIPURL, store),
+		subject:        cfg.Subject,
 		legacySubjects: map[string]bool{},
 	}
 	for _, label := range config.LegacySubjects() {

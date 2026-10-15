@@ -10,14 +10,14 @@ import (
 
 // ClientRecord is one OIDC client registration.
 type ClientRecord struct {
-	ClientID                string   `json:"client_id"`
-	ClientSecret            string   `json:"client_secret"`
-	RedirectURIs            []string `json:"redirect_uris"`
-	PostLogoutRedirectURIs  []string `json:"post_logout_redirect_uris"`
-	GrantTypes              []string `json:"grant_types"`
-	Scopes                  []string `json:"scopes"`
-	FirstParty              bool     `json:"first_party"`
-	CookieDomain            string   `json:"cookie_domain"`
+	ClientID               string   `json:"client_id"`
+	ClientSecret           string   `json:"client_secret"`
+	RedirectURIs           []string `json:"redirect_uris"`
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	GrantTypes             []string `json:"grant_types"`
+	Scopes                 []string `json:"scopes"`
+	FirstParty             bool     `json:"first_party"`
+	CookieDomain           string   `json:"cookie_domain"`
 }
 
 var defaultGrants = []string{"authorization_code"}
