@@ -84,41 +84,18 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) log() *slog.Logger { return s.logger }
 
-// routes mirrors the legacy registration order. Exact patterns shadow the
-// module routes exactly where the app-level handlers did in Express.
+// routes installs every entry of routeTable into a ServeMux. The table order
+// mirrors the legacy registration order; Go 1.22 precedence (more specific
+// patterns win) preserves the Express override semantics.
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /config.js", s.handleConfigJS)
-
-	// 两阶段重置：必须在模块路由之前（ServeMux 精确模式天然优先）。
-	mux.HandleFunc("POST /api/totp/reset", s.handleAppTotpReset)
-	mux.HandleFunc("POST /api/totp/confirm", s.handleAppTotpConfirm)
-
-	// 应用级登录：覆盖模块内的 /api/login。
-	mux.HandleFunc("POST /api/login", s.handleLogin)
-
-	// 旧 totp 模块路由（/api/totp/setup、/api/totp/login）。
-	mux.HandleFunc("POST /api/totp/setup", s.handleModuleSetup)
-	mux.HandleFunc("POST /api/totp/login", s.handleModuleLogin)
-	// 旧模块挂在 /api 下的路由（/api/setup、/api/reset）。
-	mux.HandleFunc("POST /api/setup", s.handleModuleSetup)
-	mux.HandleFunc("POST /api/reset", s.handleModuleReset)
-
-	mux.HandleFunc("GET /api/verify", s.handleVerify)
-	mux.HandleFunc("POST /api/logout", s.handleLogout)
-	mux.HandleFunc("GET /api/sessions", s.handleSessionList)
-	mux.HandleFunc("PUT /api/sessions/{id}/name", s.handleSessionRename)
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleSessionDelete)
-
-	mux.HandleFunc("GET /api/internal/sessions", s.handleInternalSessions)
-	mux.HandleFunc("PUT /api/internal/sessions/{id}/name", s.handleInternalRename)
-	mux.HandleFunc("DELETE /api/internal/sessions/{id}", s.handleInternalDelete)
-	mux.HandleFunc("POST /api/internal/totp/reset", s.handleInternalTotpReset)
-	mux.HandleFunc("POST /api/internal/totp/confirm", s.handleInternalTotpConfirm)
-
-	mux.HandleFunc("GET /assets/", s.serveAsset)
-	mux.HandleFunc("/", s.handleRoot)
+	for _, spec := range routeTable {
+		pattern := spec.path
+		if spec.method != "" {
+			pattern = spec.method + " " + spec.path
+		}
+		mux.HandleFunc(pattern, s.handlerFor(spec.kind))
+	}
 	return mux
 }
 
