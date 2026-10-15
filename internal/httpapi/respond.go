@@ -7,12 +7,14 @@ import (
 	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"auth-server-go/internal/jsonx"
 )
 
 // writeJSON serializes v and writes status. Marshal failure degrades to a
 // minimal server_error body.
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	raw, err := json.Marshal(v)
+	raw, err := jsonx.Marshal(v)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -85,6 +87,30 @@ func readJSONBody(r *http.Request) map[string]any {
 		return map[string]any{}
 	}
 	return m
+}
+
+// Response structs below fix the JSON key order to match the legacy
+// JSON.stringify output. Go maps sort keys, so any multi-field success body must
+// use a struct whose field order equals the legacy object's insertion order.
+
+type okMessageBody struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+type okDeviceBody struct {
+	OK         bool   `json:"ok"`
+	DeviceName string `json:"deviceName"`
+}
+
+type secretBody struct {
+	Secret     string `json:"secret"`
+	OtpauthURI string `json:"otpauthUri"`
+}
+
+type moduleLoginBody struct {
+	Token     string `json:"token"`
+	ExpiresIn string `json:"expiresIn"`
 }
 
 // bodyString returns a body field only when it is a single string.

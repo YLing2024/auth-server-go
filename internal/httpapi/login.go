@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"auth-server-go/internal/config"
+	"auth-server-go/internal/jsonx"
 	"auth-server-go/internal/totp"
 )
 
@@ -122,7 +123,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			go s.oidc.NotifyBackchannel(sid, s.subject)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Session revoked"})
+	writeJSON(w, http.StatusOK, okMessageBody{OK: true, Message: "Session revoked"})
 }
 
 type loginBody struct {
@@ -222,7 +223,7 @@ func (s *Server) verifyAPIToken(ctx context.Context, token string) (apiTokenResu
 		if ttl < 1 {
 			ttl = 1
 		}
-		if body, err := json.Marshal(meta); err == nil {
+		if body, err := jsonx.Marshal(meta); err == nil {
 			_ = s.store.Client().Set(ctx, key, body, time.Duration(ttl)*time.Second).Err()
 		}
 	}

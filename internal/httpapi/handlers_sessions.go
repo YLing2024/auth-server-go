@@ -80,7 +80,7 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = c.HSet(ctx, hashKey, "deviceName", deviceName).Err()
 	_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deviceName": deviceName})
+	writeJSON(w, http.StatusOK, okDeviceBody{OK: true, DeviceName: deviceName})
 }
 
 // handleSessionDelete revokes a session token. It is idempotent.

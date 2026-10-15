@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"auth-server-go/internal/jsonx"
 )
 
 // PendingTTL is how long a two-phase reset stays confirmable.
@@ -92,7 +94,7 @@ func writeJSONAtomic(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("totp: 创建目录失败: %w", err)
 	}
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := jsonx.MarshalIndent(v, 2)
 	if err != nil {
 		return err
 	}

@@ -1,11 +1,12 @@
 package oidc
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"auth-server-go/internal/jsonx"
 )
 
 // itoa formats a non-negative integer. Cookie Max-Age values are always >= 0, so
@@ -15,7 +16,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // writeJSON serializes v with the standard library and writes status. A marshal
 // failure degrades to a minimal server_error body rather than a partial write.
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	raw, err := json.Marshal(v)
+	raw, err := jsonx.Marshal(v)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -25,6 +26,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
+}
+
+// redirectFound reproduces Express's res.redirect(302, url) byte shape: the same
+// Location, a `text/plain; charset=utf-8` body that spells the target, and the
+// `Vary: Accept` header the legacy 302 carried. Browsers never read this body,
+// but keeping it identical removes a spurious diff against the old server.
+func redirectFound(w http.ResponseWriter, location string) {
+	w.Header().Set("Location", location)
+	w.Header().Set("Vary", "Accept")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusFound)
+	_, _ = w.Write([]byte("Found. Redirecting to " + location))
 }
 
 // allowMethod rejects methods outside the allowed set with 405, mirroring the

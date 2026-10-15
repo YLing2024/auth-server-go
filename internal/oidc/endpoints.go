@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"auth-server-go/internal/jsonx"
 	"auth-server-go/internal/jwt"
 )
 
@@ -72,7 +73,7 @@ func (p *Provider) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
@@ -220,8 +221,7 @@ func (p *Provider) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if session == nil {
-		w.Header().Set("Location", "/auth?redirect="+EncodeURIComponent(r.URL.RequestURI()))
-		w.WriteHeader(http.StatusFound)
+		redirectFound(w, "/auth?redirect="+EncodeURIComponent(r.URL.RequestURI()))
 		return
 	}
 
@@ -241,7 +241,7 @@ func (p *Provider) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if nonce != "" {
 		rec.Nonce = nonce
 	}
-	raw, _ := json.Marshal(rec)
+	raw, _ := jsonx.Marshal(rec)
 	if err := p.rdb().Client().Set(r.Context(), codePrefix+SHA256Hex(code), raw, seconds(CodeTTL)).Err(); err != nil {
 		errorPage(w, http.StatusInternalServerError, "server_error", "授权码写入失败")
 		return
@@ -368,7 +368,7 @@ func (p *Provider) handleRefresh(w http.ResponseWriter, r *http.Request, b body,
 	}
 	ttl, _ := c.TTL(r.Context(), key).Result()
 	rec.Used = true
-	bodyRaw, _ := json.Marshal(rec)
+	bodyRaw, _ := jsonx.Marshal(rec)
 	ttlSec := int(ttl.Seconds())
 	if ttlSec <= 0 {
 		ttlSec = p.refreshTTL
@@ -596,8 +596,7 @@ func (p *Provider) HandleEndSession(w http.ResponseWriter, r *http.Request) {
 			errorPage(w, http.StatusBadRequest, "invalid_request", "post_logout_redirect_uri 未列入白名单")
 			return
 		}
-		w.Header().Set("Location", postLogout)
-		w.WriteHeader(http.StatusFound)
+		redirectFound(w, postLogout)
 		return
 	}
 
@@ -704,8 +703,7 @@ func (p *Provider) redirectWithQuery(w http.ResponseWriter, r *http.Request, red
 		q.Set("state", state)
 	}
 	u.RawQuery = q.Encode()
-	w.Header().Set("Location", u.String())
-	w.WriteHeader(http.StatusFound)
+	redirectFound(w, u.String())
 }
 
 // SetLoginPage wires the static handler used by /auth.

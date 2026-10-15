@@ -124,7 +124,7 @@ func (s *Server) handleInternalRename(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = c.HSet(ctx, hashKey, "deviceName", deviceName).Err()
 	_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deviceName": deviceName})
+	writeJSON(w, http.StatusOK, okDeviceBody{OK: true, DeviceName: deviceName})
 }
 
 // handleInternalDelete revokes a device session for the asserted user.

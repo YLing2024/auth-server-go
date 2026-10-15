@@ -23,6 +23,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"auth-server-go/internal/jsonx"
 )
 
 var b64 = base64.RawURLEncoding
@@ -181,7 +183,7 @@ func (ks *KeyStore) JWKS() ([]byte, error) {
 			Kid: ks.keys[i].Kid, Use: "sig", Alg: "ES256",
 		})
 	}
-	return json.Marshal(doc)
+	return jsonx.Marshal(doc)
 }
 
 type jwsHeader struct {
@@ -197,11 +199,11 @@ func (ks *KeyStore) SignJWT(payload any) (string, error) {
 		return "", errors.New("jwt: 没有签名密钥")
 	}
 	header := jwsHeader{Alg: "ES256", Typ: "JWT", Kid: ks.keys[0].Kid}
-	hb, err := json.Marshal(header)
+	hb, err := jsonx.Marshal(header)
 	if err != nil {
 		return "", err
 	}
-	pb, err := json.Marshal(payload)
+	pb, err := jsonx.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -284,22 +286,27 @@ func (ks *KeyStore) Verify(token string, opts VerifyOpts) (map[string]any, error
 
 // ── HS256（仅旧 /api/totp 模块路由复用，行为与旧 lib/jwt.js 一致）────────────
 
-// SignHS256 signs a payload map as an HS256 JWT with the given lifetime, matching
-// the legacy lib/totp-auth/lib/jwt.js output shape.
-func SignHS256(payload map[string]any, secret string, ttl time.Duration) (string, error) {
+// SignHS256 signs a payload as an HS256 JWT with the given lifetime. The claims
+// body keeps the legacy lib/totp-auth/lib/jwt.js field order: the caller's
+// fields first (so pass a struct, not a map), then iat and exp appended last.
+// This keeps module tokens byte-identical for the same payload and clock.
+func SignHS256(payload any, secret string, ttl time.Duration) (string, error) {
 	now := time.Now().Unix()
-	body := make(map[string]any, len(payload)+2)
-	for k, v := range payload {
-		body[k] = v
-	}
-	body["iat"] = now
-	body["exp"] = now + int64(ttl.Seconds())
-
-	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	pb, err := jsonx.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
-	claims, err := json.Marshal(body)
+	if len(pb) < 2 || pb[0] != '{' || pb[len(pb)-1] != '}' {
+		return "", errors.New("jwt: HS256 payload 必须是 JSON 对象")
+	}
+	claims := make([]byte, 0, len(pb)+32)
+	claims = append(claims, pb[:len(pb)-1]...)
+	claims = append(claims, fmt.Sprintf(`,"iat":%d,"exp":%d}`, now, now+int64(ttl.Seconds()))...)
+
+	header, err := jsonx.Marshal(struct {
+		Alg string `json:"alg"`
+		Typ string `json:"typ"`
+	}{Alg: "HS256", Typ: "JWT"})
 	if err != nil {
 		return "", err
 	}
@@ -405,7 +412,7 @@ func (ks *KeyStore) persist() error {
 	if err := os.MkdirAll(filepath.Dir(ks.path), 0o700); err != nil {
 		return fmt.Errorf("jwt: 创建密钥目录失败: %w", err)
 	}
-	data, err := json.MarshalIndent(keyFile{Keys: ks.keys}, "", "  ")
+	data, err := jsonx.MarshalIndent(keyFile{Keys: ks.keys}, 2)
 	if err != nil {
 		return err
 	}
