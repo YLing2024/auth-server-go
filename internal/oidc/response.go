@@ -41,8 +41,13 @@ func redirectFound(w http.ResponseWriter, location string) {
 }
 
 // allowMethod rejects methods outside the allowed set with 405, mirroring the
-// Express router that only registered the listed verbs.
+// Express router that only registered the listed verbs. HEAD is accepted
+// wherever GET is, because Express routes HEAD to the GET handler and net/http
+// suppresses the body itself.
 func allowMethod(w http.ResponseWriter, r *http.Request, methods ...string) bool {
+	if r.Method == http.MethodHead && containsString(methods, http.MethodGet) {
+		return true
+	}
 	for _, m := range methods {
 		if r.Method == m {
 			return true
@@ -50,6 +55,15 @@ func allowMethod(w http.ResponseWriter, r *http.Request, methods ...string) bool
 	}
 	w.Header().Set("Allow", strings.Join(methods, ", "))
 	w.WriteHeader(http.StatusMethodNotAllowed)
+	return false
+}
+
+func containsString(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
 	return false
 }
 
