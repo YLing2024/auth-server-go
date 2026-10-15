@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"auth-server-go/internal/jsonx"
 	"auth-server-go/internal/jwt"
 	"auth-server-go/internal/redis"
 )
@@ -185,7 +186,9 @@ func (p *Provider) ValidateToken(ctx context.Context, tok string) *ResolvedSessi
 	// 1) legacy login session (raw key)
 	if user, err := c.Get(ctx, tok).Result(); err == nil && user != "" {
 		_ = c.Expire(ctx, tok, seconds(p.sessionTTL)).Err()
-		return &ResolvedSession{Sub: p.normalizeSub(user), AuthTime: p.now(), SID: SHA256Hex(tok)[:16], Source: "legacy"}
+		// Raw matters: EnsureSsoSession hashes it into the reverse index so that
+		// /api/logout and device kicks revoke the shared cookie immediately.
+		return &ResolvedSession{Sub: p.normalizeSub(user), AuthTime: p.now(), SID: SHA256Hex(tok)[:16], Source: "legacy", Raw: tok}
 	}
 	// 2) first-party SSO cookie (hashed record)
 	if s, ok := p.getSSO(ctx, tok); ok {
@@ -264,7 +267,7 @@ func (p *Provider) EnsureSsoSession(ctx context.Context, session *ResolvedSessio
 		sessionHash = SHA256Hex(session.Raw)
 		rec.SessionHash = sessionHash
 	}
-	raw, _ := json.Marshal(rec)
+	raw, _ := jsonx.Marshal(rec)
 	if err := c.Set(ctx, ssoPrefix+h, raw, seconds(p.sessionTTL)).Err(); err != nil {
 		return "", err
 	}
@@ -522,7 +525,7 @@ func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenS
 		return nil, err
 	}
 	atRec := accessRecord{Sub: params.Sub, ClientID: params.Client.ClientID, Scope: scope, SID: params.SID, AuthTime: params.AuthTime, Exp: t + int64(p.accessTTL)}
-	atRaw, _ := json.Marshal(atRec)
+	atRaw, _ := jsonx.Marshal(atRec)
 	if err := c.Set(ctx, atPrefix+SHA256Hex(accessToken), atRaw, seconds(p.accessTTL)).Err(); err != nil {
 		return nil, err
 	}
@@ -550,7 +553,7 @@ func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenS
 			chain = RandomToken(16)
 		}
 		rtRec := refreshRecord{Sub: params.Sub, ClientID: params.Client.ClientID, Scope: scope, SID: params.SID, AuthTime: params.AuthTime, Chain: chain, Used: false}
-		rtRaw, _ := json.Marshal(rtRec)
+		rtRaw, _ := jsonx.Marshal(rtRec)
 		rh := SHA256Hex(refreshToken)
 		if err := c.Set(ctx, rtPrefix+rh, rtRaw, seconds(p.refreshTTL)).Err(); err != nil {
 			return nil, err
@@ -655,6 +658,6 @@ func clientAuth(r *http.Request, body url.Values) (clientID, secret string) {
 }
 
 func jsonString(s string) string {
-	b, _ := json.Marshal(s)
+	b, _ := jsonx.Marshal(s)
 	return string(b)
 }
