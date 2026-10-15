@@ -1,0 +1,27 @@
+# 只锁基础项：编码 / 换行 / 缩进 / 末行；不管风格细节。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+
+# Markdown 保留行尾空格（换行语义），由编辑器自行决定
+[*.md]
+trim_trailing_whitespace = false
+
+# Go 用制表符（gofmt 决定）
+[*.go]
+indent_style = tab
+
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+# 生成物 / 锁文件不强加规则
+[package-lock.json]
+indent_style = unset
+indent_size = unset

@@ -1,0 +1,20 @@
+# 构建产物
+/auth-server-go
+/bin/
+
+# 本机运行数据与密钥（部署时由 DATA_DIR 注入，绝不入库）
+oidc-keys.json
+totp-secret.json
+totp-pending.json
+jwt-secret
+internal-token
+clients.json
+.env
+*.secret
+
+# 前端依赖
+node_modules/
+web/node_modules/
+
+# 验收临时目录
+/.acceptance/
