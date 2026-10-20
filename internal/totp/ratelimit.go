@@ -2,9 +2,11 @@ package totp
 
 import "sync"
 
-// RateLimiter is an in-memory, per-IP tiered lockout limiter. Each round of
-// MaxFailures consecutive failures raises the lockout tier. A successful login
-// clears the record. Tiers default to 60/300/900 seconds.
+// RateLimiter is an in-memory, per-key tiered lockout limiter. Keys are opaque
+// strings, so the same algorithm serves both the client-IP dimension and the
+// device dimension. Each round of MaxFailures consecutive failures raises the
+// lockout tier. A successful login clears the record. Tiers default to
+// 60/300/900 seconds.
 type RateLimiter struct {
 	mu          sync.Mutex
 	maxFailures int
@@ -36,7 +38,7 @@ func NewRateLimiter(maxFailures int, lockout []int) *RateLimiter {
 	}
 }
 
-// Status reports the current lock state for an IP.
+// Status reports the current lock state for a key.
 type Status struct {
 	Locked     bool
 	RetryAfter int
@@ -44,11 +46,11 @@ type Status struct {
 	Tier       int
 }
 
-func (l *RateLimiter) get(ip string) *entry {
-	e := l.entries[ip]
+func (l *RateLimiter) get(key string) *entry {
+	e := l.entries[key]
 	if e == nil {
 		e = &entry{}
-		l.entries[ip] = e
+		l.entries[key] = e
 	}
 	if e.lockUntil != 0 && e.lockUntil <= l.now() {
 		e.lockUntil = 0
@@ -58,10 +60,10 @@ func (l *RateLimiter) get(ip string) *entry {
 }
 
 // Status returns the lock state without mutating counters beyond expiry reset.
-func (l *RateLimiter) Status(ip string) Status {
+func (l *RateLimiter) Status(key string) Status {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.get(ip)
+	e := l.get(key)
 	locked := e.lockUntil > l.now()
 	retry := 0
 	if locked {
@@ -73,12 +75,12 @@ func (l *RateLimiter) Status(ip string) Status {
 	return Status{Locked: locked, RetryAfter: retry, Failures: e.failures, Tier: e.tier}
 }
 
-// RecordFailure increments the failure count, escalating the tier when the
-// threshold is crossed.
-func (l *RateLimiter) RecordFailure(ip string) Status {
+// RecordFailure increments the failure count for key, escalating the tier when
+// the threshold is crossed.
+func (l *RateLimiter) RecordFailure(key string) Status {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.get(ip)
+	e := l.get(key)
 	e.failures++
 	if e.failures >= l.maxFailures {
 		tier := e.tier
@@ -102,9 +104,9 @@ func (l *RateLimiter) RecordFailure(ip string) Status {
 	return Status{Locked: locked, RetryAfter: retry, Failures: e.failures, Tier: e.tier}
 }
 
-// RecordSuccess clears the record for an IP.
-func (l *RateLimiter) RecordSuccess(ip string) {
+// RecordSuccess clears the record for a key.
+func (l *RateLimiter) RecordSuccess(key string) {
 	l.mu.Lock()
-	delete(l.entries, ip)
+	delete(l.entries, key)
 	l.mu.Unlock()
 }

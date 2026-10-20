@@ -61,6 +61,71 @@ func TestRateLimiterTierLadder(t *testing.T) {
 	}
 }
 
+// TestRateLimiterKeyedIsolation proves the limiter treats keys as opaque
+// strings, which is what lets the same algorithm serve device keys.
+func TestRateLimiterKeyedIsolation(t *testing.T) {
+	now := int64(1_000_000_000_000)
+	l := NewRateLimiter(10, []int{300, 900, 3600})
+	l.now = func() int64 { return now }
+
+	keyA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	keyB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for i := 0; i < 4; i++ {
+		l.RecordFailure(keyA)
+	}
+	if st := l.Status(keyB); st.Failures != 0 || st.Locked || st.Tier != 0 {
+		t.Fatalf("key isolation broken: B = %+v", st)
+	}
+	if st := l.Status(keyA); st.Failures != 4 {
+		t.Fatalf("key A failures = %d, want 4", st.Failures)
+	}
+}
+
+// TestRateLimiterDeviceLadder pins the device dimension's 300/900/3600 ladder.
+func TestRateLimiterDeviceLadder(t *testing.T) {
+	now := int64(1_000_000_000_000)
+	l := NewRateLimiter(10, []int{300, 900, 3600})
+	l.now = func() int64 { return now }
+
+	const device = "device-key"
+	for i := 0; i < 9; i++ {
+		l.RecordFailure(device)
+	}
+	if st := l.Status(device); st.Locked {
+		t.Fatalf("locked before 10 failures: %+v", st)
+	}
+
+	st := l.RecordFailure(device)
+	if !st.Locked || st.RetryAfter != 300 || st.Tier != 1 {
+		t.Fatalf("first device lock = %+v, want 300s tier 1", st)
+	}
+
+	now += 300_000
+	for i := 0; i < 10; i++ {
+		st = l.RecordFailure(device)
+	}
+	if !st.Locked || st.RetryAfter != 900 || st.Tier != 2 {
+		t.Fatalf("second device lock = %+v, want 900s tier 2", st)
+	}
+
+	now += 900_000
+	for i := 0; i < 10; i++ {
+		st = l.RecordFailure(device)
+	}
+	if !st.Locked || st.RetryAfter != 3600 || st.Tier != 3 {
+		t.Fatalf("third device lock = %+v, want 3600s tier 3", st)
+	}
+
+	// The ladder is capped at one hour.
+	now += 3600_000
+	for i := 0; i < 10; i++ {
+		st = l.RecordFailure(device)
+	}
+	if !st.Locked || st.RetryAfter != 3600 {
+		t.Fatalf("capped device lock = %+v, want 3600s", st)
+	}
+}
+
 // TestRateLimiterSuccessClears checks that a good login wipes the record.
 func TestRateLimiterSuccessClears(t *testing.T) {
 	now := int64(1_000_000_000_000)
