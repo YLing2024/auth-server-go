@@ -56,6 +56,59 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* 已登录状态：图标 + 账号/时间列表 + 退出按钮 */
+.auth-status {
+  text-align: center;
+  margin: 8px 0 28px;
+}
+
+.auth-status-icon {
+  font-size: 44px;
+}
+
+.auth-facts {
+  margin: 0;
+  padding: 16px 0 0;
+  border-top: 1px solid rgba(128, 128, 128, 0.18);
+}
+
+.auth-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  min-width: 0;
+}
+
+.auth-fact dt {
+  flex: none;
+  color: rgba(128, 128, 128, 1);
+}
+
+.auth-fact dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.auth-note {
+  display: block;
+  margin-top: 28px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 72px 0;
+}
+
 /* 窄屏：卡片占满可用宽度，且不产生横向滚动 */
 @media (max-width: 480px) {
   .auth-root {
