@@ -15,6 +15,7 @@ import {
 import type { ThemeConfig } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { deviceName, resolveRedirect } from './auth-logic';
+import { deviceFingerprintHeaders } from './fingerprint';
 import {
   applyTheme,
   resolveTheme,
@@ -60,6 +61,7 @@ function LoginPage({ mode }: { mode: ThemeMode }) {
 
   async function setupInit(): Promise<void> {
     try {
+      // 首次绑定只是生成 secret，不是凭据提交：按最小化原则不附带指纹头。
       const res = await fetch('/api/totp/setup', { method: 'POST' });
       const data = (await res.json()) as SetupData;
       if (!data.secret) {
@@ -81,9 +83,11 @@ function LoginPage({ mode }: { mode: ThemeMode }) {
     setError('');
     setLoading(true);
     try {
+      // 指纹最多等待 1.5 秒；拿不到时不带这两个头，登录照常继续。
+      const fpHeaders = await deviceFingerprintHeaders();
       const res = await fetch('/api/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...fpHeaders },
         body: JSON.stringify({ code: value, deviceName: deviceName() }),
       });
       const data = (await res.json().catch(() => ({}))) as LoginData;
