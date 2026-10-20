@@ -131,15 +131,15 @@ type loginBody struct {
 	ExpiresIn int    `json:"expiresIn"`
 }
 
-// handleLogin is the app-level TOTP login: rate-limit by real client IP, verify
-// TOTP, then issue a sliding Redis session token.
+// handleLogin is the app-level TOTP login: rate-limit by real client IP and
+// browser device in parallel, verify TOTP, then issue a sliding Redis session
+// token.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	body := readJSONBody(r)
 	ip := clientIP(r)
-	if status := s.appLimiter.Status(ip); status.Locked {
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{
-			"code": "rate_limited", "message": "Too many failed attempts", "retryAfter": status.RetryAfter,
-		})
+	deviceKey := DeviceKeyFromRequest(w, r)
+	if locked, retryAfter := s.loginLockStatus(s.appLimiter, ip, deviceKey); locked {
+		writeJSON(w, http.StatusTooManyRequests, newRateLimitBody(retryAfter))
 		return
 	}
 	secret, ok := s.secrets.Load()
@@ -149,11 +149,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimSpace(bodyString(body, "code"))
 	if !totp.Verify(secret, code, totp.DefaultWindow) {
-		s.appLimiter.RecordFailure(ip)
+		s.recordLoginFailure(s.appLimiter, ip, deviceKey)
 		writeJSON(w, http.StatusUnauthorized, errorBody{Code: "invalid_code", Message: "Invalid TOTP code"})
 		return
 	}
-	s.appLimiter.RecordSuccess(ip)
+	s.clearLoginFailures(s.appLimiter, ip, deviceKey)
 
 	if !s.store.Available() {
 		s.log().Error("login: redis 不可用，拒绝签发会话")

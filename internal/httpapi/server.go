@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"auth-server-go/internal/config"
 	"auth-server-go/internal/oidc"
@@ -33,6 +34,8 @@ type Server struct {
 
 	appLimiter    *totp.RateLimiter
 	moduleLimiter *totp.RateLimiter
+	deviceLimiter *totp.RateLimiter
+	globalLimiter *totp.GlobalCounter
 
 	geo *geoResolver
 
@@ -58,8 +61,10 @@ func New(cfg *config.Config, store *redis.Store, provider *oidc.Provider, public
 		secrets:        totp.NewSecretStore(filepath.Join(cfg.DataDir, "totp-secret.json")),
 		pending:        totp.NewPendingStore(filepath.Join(cfg.DataDir, "totp-pending.json")),
 		logger:         logger,
-		appLimiter:     totp.NewRateLimiter(5, []int{60, 300, 900}),
-		moduleLimiter:  totp.NewRateLimiter(5, []int{60, 300, 900}),
+		appLimiter:     totp.NewRateLimiter(cfg.RateLimitIPMax, []int{60, 300, 900}),
+		moduleLimiter:  totp.NewRateLimiter(cfg.RateLimitIPMax, []int{60, 300, 900}),
+		deviceLimiter:  totp.NewRateLimiter(cfg.RateLimitDeviceMax, []int{300, 900, 3600}),
+		globalLimiter:  totp.NewGlobalCounter(cfg.RateLimitGlobalMax, 5*time.Minute),
 		geo:            newGeoResolver(cfg.GeoIPURL, store),
 		subject:        cfg.Subject,
 		legacySubjects: map[string]bool{},
@@ -128,7 +133,8 @@ func isOIDCPath(p string) bool {
 	return false
 }
 
-// serveLoginIndex serves the embedded login page for /auth.
+// serveLoginIndex serves the embedded login page for /auth and makes sure the
+// device cookie exists before the first login attempt can fail.
 func (s *Server) serveLoginIndex(w http.ResponseWriter, r *http.Request) {
 	if s.index == nil {
 		http.Error(w, "login page not available", http.StatusInternalServerError)
@@ -136,6 +142,11 @@ func (s *Server) serveLoginIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=0")
+	if !hasValidDeviceCookie(r) {
+		// Never let a shared cache hand one visitor's device cookie to another.
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	DeviceKeyFromRequest(w, r)
 	_, _ = w.Write(s.index)
 }
 
