@@ -99,6 +99,19 @@
   仅 `code` 参与前端判断。
 - 代价：清 Cookie 或换浏览器即视为新设备；不接收 Cookie 的客户端只受 IP 维度约束。
 
+### 3.8 「记住我」与短会话
+
+旧实现只有 7 天滑动会话，没有登录选项。新实现新增 `remember`（默认 `false`）：
+
+- `remember=false`：会话 TTL 为 `SESSION_SHORT_TTL`（默认 900s），**绝对过期**；
+  `touchSession()` 只更新 `lastSeenAt`，不做 `EXPIRE`；`HomeAuth` cookie 显式
+  `Max-Age=900`，不依赖浏览器会话级 cookie。
+- `remember=true`：保持旧行为，`SESSION_DAYS*86400` 滑动续期。
+- 老会话（Redis hash 无 `remember` 字段）按 `remember=1` 读取，不会因升级突然掉线。
+- `/token` 的 `expires_in` 改为 SSO 会话剩余有效期（供网关切站点 cookie），
+  access/id token 自身 `exp` 仍是 `ACCESS_TTL_SEC`；`id_token` 新增布尔 claim `remember`。
+- 新增 `SESSION_SHORT_TTL`，非正整数时启动失败（与其它 fail-fast 配置一致）。
+
 ## 4. 已知风险与未覆盖
 
 - **限速状态在进程内存**：重启即清空，与旧实现一致；多实例部署需在更外层统一限速。

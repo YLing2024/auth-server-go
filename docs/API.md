@@ -33,7 +33,8 @@
 | `DATA_DIR` | 当前工作目录 | 密钥 / 注册表目录 |
 | `ISSUER` | `http://127.0.0.1:19260` | OIDC issuer，端点 URL 由它拼接；不得硬编码域名 |
 | `SSO_SUBJECT` / `SSO_DISPLAY_NAME` | `linden` / = `SSO_SUBJECT` | 身份与展示名 |
-| `SESSION_DAYS` | `7` | 会话滑动过期天数 |
+| `SESSION_DAYS` | `7` | 勾选「记住我」时的滑动过期天数 |
+| `SESSION_SHORT_TTL` | `900` | 不勾选时的绝对过期秒数，必须为正整数，期间不续期 |
 | `JWT_SECRET` | 读 `<DATA_DIR>/jwt-secret` | 旧模块 HS256 密钥 |
 | `INTERNAL_TOKEN_FILE` / `INTERNAL_TOKEN` | `<DATA_DIR>/internal-token` / 空 | 内部令牌文件与覆盖值 |
 | `AUTH_GEOIP_URL` | `https://ip-api.com/json/{ip}?fields=status,country,regionName,city` | 登录来源解析模板 |
@@ -171,16 +172,26 @@ curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:19260/auth?redirect=%
   详见 §0「登录限速与设备标识」。
 - 可选请求头：`X-Device-Fp`（32 位小写十六进制 visitorId）、`X-Device-Fp-Conf`
   （0~1 的置信度，低于 0.3 时忽略指纹）。缺失或非法时退化为不带指纹的四字段哈希。
-- 请求体（JSON）：`code`（string，必填，6 位数字，允许空格）。
+- 请求体（JSON）：`code`（string，必填，6 位数字，允许空格）、
+  `remember`（bool，可选，默认 `false`；`true` 走 7 天滑动，`false` 走 `SESSION_SHORT_TTL`
+  绝对过期）、`deviceName`（string，可选，截断到 64 字符）。
 
 ```bash
+# 不勾选「记住我」（15 分钟绝对过期）
 curl -s -X POST http://localhost:19260/api/login \
-  -H 'Content-Type: application/json' -d '{"code":"123456"}'
+  -H 'Content-Type: application/json' -d '{"code":"123456","remember":false}'
+# {"token":"<64 位十六进制>","expiresIn":900}
+
+# 勾选「记住我」（7 天滑动）
+curl -s -X POST http://localhost:19260/api/login \
+  -H 'Content-Type: application/json' -d '{"code":"123456","remember":true}'
 # {"token":"<64 位十六进制>","expiresIn":604800}
 ```
 
-- 成功：`200 {"token":"<64hex>","expiresIn":<SESSION_DAYS*86400>}`。
-- 副作用：写会话键（滑动 7 天）、登记设备元数据、撤销同设备旧会话。
+- 成功：`200 {"token":"<64hex>","expiresIn":<900 或 SESSION_DAYS*86400>}`；`expiresIn` 即新会话
+  的初始有效期（秒）。
+- 副作用：写会话键（`remember=1` 滑动 7 天；`remember=0` 绝对过期且不续期）、在
+  `auth:session:<token>` 写入 `remember`（`"0"`/`"1"`）、登记设备元数据、撤销同设备旧会话。
 
 | 状态 | `code` | 语义 |
 |---|---|---|
@@ -191,7 +202,9 @@ curl -s -X POST http://localhost:19260/api/login \
 
 ### GET /api/verify
 
-兼容保留（旧探针场景）。按 `?token=` → `X-Auth-Token` → `Authorization: Bearer` 顺序取令牌，命中则滑动续期。
+兼容保留（旧探针场景）。按 `?token=` → `X-Auth-Token` → `Authorization: Bearer` 顺序取令牌，命中后
+按会话的 `remember` 决定是否续期：`remember=1` 滑动续满，`remember=0`（含首方 SSO 令牌）绝不延长，
+只更新 `lastSeenAt` 节流记录。老会话缺 `remember` 字段按 `remember=1` 处理。
 
 - 鉴权：会话令牌（也识别首方 SSO 令牌、接口令牌 `api:token:`）。
 - 成功：`200 {"ok":true,"user":"<SSO_SUBJECT>","exp":<unix 秒>}`，同时写 `X-Auth-User` 响应头。
@@ -357,8 +370,9 @@ curl -s http://localhost:19260/jwks.json
 （必须 `code`）、`scope`（必须含 `openid`）、`state`、`nonce`、`code_challenge`（公开客户端必填，
 方法仅 `S256`）、`code_challenge_method`、`prompt`（`login` 强制重登）、`max_age`、`token`（登录后回跳携带）。
 
+- 有会话：`302` 到 `redirect_uri?code=<43 字符>&state=...`，并下发首方 SSO cookie；`HomeAuth` 的
+  `Max-Age` 与会话一致（`remember=0` 为 `SESSION_SHORT_TTL`，`remember=1` 为 `SESSION_DAYS*86400`）。
 - 无会话：`302` 到 `/auth?redirect=<本请求>`（回跳白名单校验）。
-- 有会话：`302` 到 `redirect_uri?code=<43 字符>&state=...`，并下发首方 SSO cookie。
 - 校验失败：`400` HTML 错误页（`invalid_request` / `unsupported_response_type` / `invalid_scope`）。
 
 ```bash
@@ -371,8 +385,13 @@ curl -s -o /dev/null -D - 'http://localhost:19260/authorize?response_type=code&c
 
 - `grant_type=authorization_code`：`code`、`redirect_uri`、`client_id`、`code_verifier`（公开客户端）。
 - `grant_type=refresh_token`：`refresh_token`、`client_id`。
-- 成功：`200 {"access_token":"<ES256 JWT>","token_type":"Bearer","expires_in":900,"id_token":"<ES256 JWT>","refresh_token":"<32 字节随机>","scope":"..."}`。
-- refresh 轮换：每次用后旧 refresh 作废；**重放旧 refresh 整链作废**。
+- 成功：`200 {"access_token":"<ES256 JWT>","token_type":"Bearer","expires_in":<会话剩余秒数>,"id_token":"<ES256 JWT>","refresh_token":"<32 字节随机>","scope":"..."}`。
+  `expires_in` 是 **SSO 会话**的剩余有效期（`remember=0` 从 900 递减，`remember=1` 为 7 天），
+  用于网关设置站点 cookie 的 `Max-Age` 与 Redis TTL；`access_token` / `id_token` 自身的 `exp`
+  仍由 `ACCESS_TTL_SEC`（默认 900s）决定，两者不可混用。`id_token` 另含布尔 claim
+  `remember`（老令牌没有该 claim 时网关按 `true` 兼容）。
+- refresh 轮换：每次用后旧 refresh 作废；**重放旧 refresh 整链作废**。`remember=0` 的 refresh
+  不会越过原会话绝对到期时间，到期后返回 `invalid_grant` 要求重新登录。
 
 ```bash
 curl -s -X POST http://localhost:19260/token \
@@ -486,7 +505,8 @@ curl -s -o /dev/null -D - 'http://localhost:19260/end_session?post_logout_redire
 - **ID 类型**：会话 ID / 令牌均为 64 位小写十六进制字符串；设备 ID 用同一形态；`sid` 为 16 位十六进制字符串。
 - **时间**：Redis 记录中的 `createdAt`/`lastSeenAt` 为 Unix 毫秒（字符串）；OIDC `exp`/`iat`/`auth_time` 为
   Unix 秒；HTTP `expiresIn` 为秒。时区无关（UTC 语义）。
-- **TTL**：会话 `SESSION_DAYS*86400`（滑动）；access/id token `ACCESS_TTL_SEC`（默认 900s）；授权码 60s；
+- **TTL**：会话勾选「记住我」为 `SESSION_DAYS*86400`（滑动）；不勾选为 `SESSION_SHORT_TTL`
+  （默认 900s，绝对过期，任何请求都不延长）；access/id token `ACCESS_TTL_SEC`（默认 900s）；授权码 60s；
   refresh 30 天；sid 记录 `max(access,refresh)`；pending 重置 300s。
 - **枚举**：`userinfo.token_type` ∈ {`access_token`,`refresh_token`}；`introspect` 同；
   `deviceName` 截断至 64 字符；`isLocal` ∈ {`"0"`,`"1"`}。
@@ -497,9 +517,9 @@ curl -s -o /dev/null -D - 'http://localhost:19260/end_session?post_logout_redire
 
 | 键 | 类型 | 语义 |
 |---|---|---|
-| `<64hex 会话令牌>` | string | 会话身份（值 = `SSO_SUBJECT`，旧值 `HomeAuth` 读取时归一化），滑动 TTL |
+| `<64hex 会话令牌>` | string | 会话身份（值 = `SSO_SUBJECT`，旧值 `HomeAuth` 读取时归一化），TTL 由 `remember` 决定 |
 | `auth:sessions` | set | 已登记会话令牌索引 |
-| `auth:session:<token>` | hash | 设备元数据（user/deviceName/ip/location/isLocal/userAgent/createdAt/lastSeenAt） |
+| `auth:session:<token>` | hash | 设备元数据（user/deviceName/ip/location/isLocal/userAgent/createdAt/lastSeenAt/remember），`remember` 缺省按 `"1"` 兼容 |
 | `oidc:code:<sha256>` | string | 授权码记录（60s） |
 | `oidc:at:<sha256>` | string | access_token 记录（撤销判定的唯一依据） |
 | `oidc:rt:<sha256>` | string | refresh 记录（含 `chain`、`used`） |

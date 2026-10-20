@@ -37,7 +37,8 @@ DATA_DIR=/var/lib/auth-server-go REDIS_DB=15 ./bin/auth-server-go
 | `DATA_DIR` | 当前目录 | 密钥与注册表所在目录 |
 | `ISSUER` | `http://127.0.0.1:19260` | 所有端点 URL 由它拼接；不硬编码域名 |
 | `SSO_SUBJECT` / `SSO_DISPLAY_NAME` | `linden` / =subject | 身份唯一来源 |
-| `SESSION_DAYS` | `7` | 会话滑动过期天数 |
+| `SESSION_DAYS` | `7` | 勾选「记住我」时的滑动过期天数 |
+| `SESSION_SHORT_TTL` | `900` | 不勾选时的绝对过期秒数，必须为正整数；期间不续期 |
 | `INTERNAL_TOKEN_FILE` | `<DATA_DIR>/internal-token` | 0600 自动生成；值不打印不返回 |
 | `ALLOWED_REDIRECT_ROOTS` | 空（仅同源） | 登录页跨域回跳白名单域名根，逗号分隔 |
 | `SSO_RL_IP_MAX` / `SSO_RL_DEVICE_MAX` / `SSO_RL_GLOBAL_MAX` | `5` / `10` / `60` | 登录限速阈值（全局计数只告警不拒绝） |
