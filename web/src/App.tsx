@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   ConfigProvider,
   Form,
   Input,
@@ -46,6 +47,7 @@ function LoginPage({ mode }: { mode: ThemeMode }) {
   const inputRef = useRef<ComponentRef<typeof Input.OTP>>(null);
   const [code, setCode] = useState('');
   const [otpKey, setOtpKey] = useState(0);
+  const [remember, setRemember] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(
     REDIRECT_REJECTED ? '回跳地址不在允许范围内，登录后将留在本站' : ''
@@ -88,7 +90,7 @@ function LoginPage({ mode }: { mode: ThemeMode }) {
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...fpHeaders },
-        body: JSON.stringify({ code: value, deviceName: deviceName() }),
+        body: JSON.stringify({ code: value, deviceName: deviceName(), remember }),
       });
       const data = (await res.json().catch(() => ({}))) as LoginData;
       if (data && data.token) {
@@ -175,6 +177,15 @@ function LoginPage({ mode }: { mode: ThemeMode }) {
             size="large"
           />
         </Form.Item>
+
+        <div className="auth-remember">
+          <Checkbox checked={remember} onChange={(e) => setRemember(e.target.checked)}>
+            记住我
+          </Checkbox>
+          <Typography.Text type="secondary" className="auth-remember-hint">
+            不勾选：15 分钟后自动退出；勾选：7 天内免登录
+          </Typography.Text>
+        </div>
 
         {error ? (
           <Alert

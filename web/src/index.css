@@ -42,6 +42,20 @@ body {
   margin-left: auto;
 }
 
+/* 记住我：复选框与说明同一块，说明允许换行，窄屏不撑破卡片 */
+.auth-remember {
+  margin-top: 20px;
+}
+
+.auth-remember-hint {
+  display: block;
+  margin-top: 4px;
+  padding-left: 24px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 /* 窄屏：卡片占满可用宽度，且不产生横向滚动 */
 @media (max-width: 480px) {
   .auth-root {
