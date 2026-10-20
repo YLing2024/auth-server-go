@@ -84,7 +84,7 @@ func deviceNameFromUA(ua string) string {
 
 // registerSessionMeta records the device metadata for a fresh login and kicks
 // off the asynchronous location lookup.
-func (s *Server) registerSessionMeta(ctx context.Context, token, deviceName, ua string, r *http.Request) error {
+func (s *Server) registerSessionMeta(ctx context.Context, token, deviceName, ua string, r *http.Request, remember bool) error {
 	ip := clientIP(r)
 	if deviceName == "" {
 		deviceName = deviceNameFromUA(ua)
@@ -110,15 +110,31 @@ func (s *Server) registerSessionMeta(ctx context.Context, token, deviceName, ua 
 		"userAgent":  truncateRunes(ua, 300),
 		"createdAt":  nowStr,
 		"lastSeenAt": nowStr,
+		"remember":   rememberFlag(remember),
 	}
 	if err := c.HSet(ctx, hashKey, fields).Err(); err != nil {
 		return err
 	}
-	if err := c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err(); err != nil {
+	if err := c.Expire(ctx, hashKey, sessionTTLFor(s.cfg, remember)).Err(); err != nil {
 		return err
 	}
 	s.geo.resolveLocation(hashKey, ip)
 	return nil
+}
+
+// rememberFlag is the stored form of the remember flag.
+func rememberFlag(remember bool) string {
+	if remember {
+		return "1"
+	}
+	return "0"
+}
+
+// metaRemember reads the flag from session metadata. A missing field is an
+// older session and keeps the legacy sliding behaviour.
+func metaRemember(meta map[string]string) bool {
+	v, ok := meta["remember"]
+	return !ok || v == "" || v == "1"
 }
 
 // revokeSession deletes a token, its index/metadata entries and every SSO and
@@ -188,6 +204,7 @@ func (s *Server) touchSession(ctx context.Context, token string, r *http.Request
 
 	hashKey := sessionHashKey(token)
 	c := s.store.Client()
+	remember := s.sessionRemember(ctx, token)
 	exists, err := c.Exists(ctx, hashKey).Result()
 	if err != nil {
 		s.log().Error("touchSession exists 查询失败", "error", err)
@@ -195,7 +212,12 @@ func (s *Server) touchSession(ctx context.Context, token string, r *http.Request
 	}
 	if exists == 1 {
 		_ = c.HSet(ctx, hashKey, "lastSeenAt", strconv.FormatInt(now, 10)).Err()
+		if !remember {
+			// Short sessions expire absolutely: only lastSeenAt may change.
+			return
+		}
 		_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
+		_ = c.Expire(ctx, token, sessionTTL(s.cfg)).Err()
 		return
 	}
 	ip := clientIP(r)
@@ -214,8 +236,10 @@ func (s *Server) touchSession(ctx context.Context, token string, r *http.Request
 		"userAgent":  truncateRunes(r.Header.Get("User-Agent"), 300),
 		"createdAt":  nowStr,
 		"lastSeenAt": nowStr,
+		"remember":   "1",
 	}).Err()
 	_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
+	_ = c.Expire(ctx, token, sessionTTL(s.cfg)).Err()
 	s.geo.resolveLocation(hashKey, ip)
 }
 

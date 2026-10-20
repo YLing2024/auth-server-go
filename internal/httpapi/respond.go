@@ -122,6 +122,13 @@ func bodyString(body map[string]any, key string) string {
 	return v
 }
 
+// bodyBool returns a JSON boolean field; anything else (including a missing
+// field) means false, so "remember me" is opt-in.
+func bodyBool(body map[string]any, key string) bool {
+	v, ok := body[key].(bool)
+	return ok && v
+}
+
 // asciiHeaderValue strips non-printable/non-ASCII runes for the X-Auth-User
 // header, matching the legacy guard against Node's ERR_INVALID_CHAR.
 func asciiHeaderValue(s string) string {

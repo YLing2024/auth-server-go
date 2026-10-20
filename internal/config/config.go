@@ -40,8 +40,11 @@ type Config struct {
 	DisplayName string
 
 	SessionDays int
-	// SessionTTL is the sliding session lifetime in seconds.
+	// SessionTTL is the sliding session lifetime in seconds (remember me).
 	SessionTTL int
+	// SessionShortTTL is the absolute lifetime in seconds for sessions created
+	// without "remember me". Those sessions are never renewed.
+	SessionShortTTL int
 
 	JWTSecret     string
 	InternalToken string
@@ -120,6 +123,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: SESSION_DAYS 必须为正整数，当前 %d", c.SessionDays)
 	}
 	c.SessionTTL = c.SessionDays * 86400
+	if c.SessionShortTTL, err = envInt("SESSION_SHORT_TTL", 900); err != nil {
+		return nil, err
+	}
+	if c.SessionShortTTL <= 0 {
+		return nil, fmt.Errorf("config: SESSION_SHORT_TTL 必须为正整数，当前 %d", c.SessionShortTTL)
+	}
 
 	c.AccessTTL = 900
 	if v := os.Getenv("ACCESS_TTL_SEC"); v != "" {

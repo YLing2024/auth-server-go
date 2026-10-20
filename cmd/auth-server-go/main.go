@@ -53,18 +53,19 @@ func run(logger *slog.Logger) error {
 	defer func() { _ = store.Close() }()
 
 	provider, err := oidc.New(oidc.Options{
-		Store:          store,
-		DataDir:        cfg.DataDir,
-		Issuer:         cfg.Issuer,
-		Subject:        cfg.Subject,
-		DisplayName:    cfg.DisplayName,
-		LegacySubjects: config.LegacySubjects(),
-		SessionTTL:     cfg.SessionTTL,
-		CookieName:     "HomeAuth",
-		AccessTTL:      cfg.AccessTTL,
-		BackchannelURL: cfg.GatewayBackchannelURL,
-		InternalToken:  cfg.InternalToken,
-		Logger:         logger,
+		Store:           store,
+		DataDir:         cfg.DataDir,
+		Issuer:          cfg.Issuer,
+		Subject:         cfg.Subject,
+		DisplayName:     cfg.DisplayName,
+		LegacySubjects:  config.LegacySubjects(),
+		SessionTTL:      cfg.SessionTTL,
+		SessionShortTTL: cfg.SessionShortTTL,
+		CookieName:      "HomeAuth",
+		AccessTTL:       cfg.AccessTTL,
+		BackchannelURL:  cfg.GatewayBackchannelURL,
+		InternalToken:   cfg.InternalToken,
+		Logger:          logger,
 	})
 	if err != nil {
 		return err

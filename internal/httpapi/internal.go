@@ -119,11 +119,13 @@ func (s *Server) handleInternalRename(w http.ResponseWriter, r *http.Request) {
 		_ = c.SAdd(ctx, sessionIndexKey, id).Err()
 		_ = c.HSet(ctx, hashKey, map[string]any{
 			"user": user, "deviceName": "", "ip": "", "location": "",
-			"isLocal": "1", "userAgent": "", "createdAt": now, "lastSeenAt": now,
+			"isLocal": "1", "userAgent": "", "createdAt": now, "lastSeenAt": now, "remember": "1",
 		}).Err()
 	}
 	_ = c.HSet(ctx, hashKey, "deviceName", deviceName).Err()
-	_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
+	if metaRemember(meta) {
+		_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
+	}
 	writeJSON(w, http.StatusOK, okDeviceBody{OK: true, DeviceName: deviceName})
 }
 

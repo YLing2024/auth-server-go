@@ -75,11 +75,13 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 		_ = c.HSet(ctx, hashKey, map[string]any{
 			"user": s.subject, "deviceName": "", "ip": ip, "location": "",
 			"isLocal": local, "userAgent": truncateRunes(r.Header.Get("User-Agent"), 300),
-			"createdAt": now, "lastSeenAt": now,
+			"createdAt": now, "lastSeenAt": now, "remember": "1",
 		}).Err()
 	}
 	_ = c.HSet(ctx, hashKey, "deviceName", deviceName).Err()
-	_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
+	if metaRemember(meta) {
+		_ = c.Expire(ctx, hashKey, sessionTTL(s.cfg)).Err()
+	}
 	writeJSON(w, http.StatusOK, okDeviceBody{OK: true, DeviceName: deviceName})
 }
 

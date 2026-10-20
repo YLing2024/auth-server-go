@@ -14,9 +14,28 @@ import (
 	"auth-server-go/internal/totp"
 )
 
-// sessionTTL is the sliding session lifetime as a duration.
+// sessionTTL is the sliding "remember me" session lifetime as a duration.
 func sessionTTL(cfg *config.Config) time.Duration {
 	return time.Duration(cfg.SessionTTL) * time.Second
+}
+
+// sessionTTLFor picks the lifetime for a new session. Sessions without
+// "remember me" get the short absolute TTL and are never renewed.
+func sessionTTLFor(cfg *config.Config, remember bool) time.Duration {
+	if remember {
+		return sessionTTL(cfg)
+	}
+	return time.Duration(cfg.SessionShortTTL) * time.Second
+}
+
+// sessionRemember reports whether a session opted into "remember me". A missing
+// field means an older session, which keeps the legacy sliding behaviour.
+func (s *Server) sessionRemember(ctx context.Context, token string) bool {
+	v, err := s.store.Client().HGet(ctx, sessionHashKey(token), "remember").Result()
+	if err != nil || v == "" {
+		return true
+	}
+	return v == "1"
 }
 
 // tokenFrom reads a client token in the legacy precedence: ?token=, the
@@ -42,7 +61,8 @@ func bearerToken(header string) string {
 	return strings.TrimSpace(h[7:])
 }
 
-// requireSession validates a login-session token and refreshes its sliding TTL.
+// requireSession validates a login-session token. Only "remember me" sessions
+// slide their TTL; short sessions expire absolutely.
 func (s *Server) requireSession(ctx context.Context, r *http.Request) (string, bool) {
 	token := tokenFrom(r)
 	if token == "" || !s.store.Available() {
@@ -52,7 +72,9 @@ func (s *Server) requireSession(ctx context.Context, r *http.Request) (string, b
 	if err != nil || stored == "" {
 		return "", false
 	}
-	_ = s.store.Client().Expire(ctx, token, sessionTTL(s.cfg)).Err()
+	if s.sessionRemember(ctx, token) {
+		_ = s.store.Client().Expire(ctx, token, sessionTTL(s.cfg)).Err()
+	}
 	return s.normalizeSubject(stored), true
 }
 
@@ -99,7 +121,6 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorBody{Code: "invalid_token", Message: "Invalid or expired session"})
 		return
 	}
-	_ = s.store.Client().Expire(ctx, token, sessionTTL(s.cfg)).Err()
 	s.touchSession(ctx, token, r)
 	ttl, _ := s.store.Client().TTL(ctx, token).Result()
 	if ttl < 0 {
@@ -162,13 +183,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token := newSessionToken()
 	ctx := r.Context()
-	if err := s.store.Client().Set(ctx, token, s.subject, sessionTTL(s.cfg)).Err(); err != nil {
+	remember := bodyBool(body, "remember")
+	ttl := sessionTTLFor(s.cfg, remember)
+	if err := s.store.Client().Set(ctx, token, s.subject, ttl).Err(); err != nil {
 		s.log().Error("login: redis SET 失败", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "redis_unavailable", Message: "Session store unavailable"})
 		return
 	}
 	deviceName := strings.TrimSpace(bodyString(body, "deviceName"))
-	if err := s.registerSessionMeta(ctx, token, deviceName, r.Header.Get("User-Agent"), r); err != nil {
+	if err := s.registerSessionMeta(ctx, token, deviceName, r.Header.Get("User-Agent"), r, remember); err != nil {
 		s.log().Error("login: 会话元数据写入失败", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "redis_unavailable", Message: "Session store unavailable"})
 		return
@@ -176,7 +199,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := s.dedupSameDeviceSessions(ctx, token, r); err != nil {
 		s.log().Error("login: 同设备去重失败", "error", err)
 	}
-	writeJSON(w, http.StatusOK, loginBody{Token: token, ExpiresIn: s.cfg.SessionTTL})
+	writeJSON(w, http.StatusOK, loginBody{Token: token, ExpiresIn: int(ttl / time.Second)})
 }
 
 // newSessionToken returns the 64-hex-char opaque session token.
