@@ -46,18 +46,42 @@
 
 ### 登录限速与设备标识
 
-`/api/login` 与 `/api/totp/login` 同时按 **IP** 与 **设备** 两个维度计数：
+`/api/login` 与 `/api/totp/login` 同时按 **IP**、**设备** 两个维度计数，并叠加
+**指纹轮换检测**：
 
 - 首次访问 `/auth` 或提交登录时，服务端下发 `__Host-ha_device` Cookie：128 位随机数的
   32 位小写十六进制，属性固定为 `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=31536000`
   （一年，无 `Domain`）。`__Host-` 前缀要求这三个属性同时成立。
-- `deviceKey = sha256(Cookie 值 + User-Agent + Sec-CH-UA + Accept-Language)`，只在进程内作为
-  限速 key；不写 Redis、不写审计、日志最多出现其前 8 位。
+- `deviceKey = sha256(Cookie 值 + User-Agent + Sec-CH-UA + Accept-Language + fp)`，只在进程内
+  作为限速 key；不写 Redis、不写审计、日志最多出现其前 8 位。
+- `fp` 来自登录页附带的两个请求头，二者必须同时满足才参与哈希，否则**整条忽略**：
+
+  | 请求头 | 规则 |
+  |---|---|
+  | `X-Device-Fp` | 32 位小写十六进制（FingerprintJS `visitorId`）；超长（>64 字节）或格式不符即忽略 |
+  | `X-Device-Fp-Conf` | `confidence.score`，取值 `[0.3, 1]`；缺失、非数字或低于 0.3 即忽略 |
+
+  两个头只允许出现在 `POST /api/login`、`POST /api/totp/login` 的登录提交上，GET、静态资源与
+  OIDC 跳转不得携带。服务端只收 visitorId 哈希，原始指纹特征全部在浏览器本地计算。
 - 失败一次：IP 与设备各记一次；成功一次：两个维度都清零。
-- 任一维度锁定即返回 `429`，`retryAfter` 取两个维度中较大的剩余秒数；响应体不区分维度。
+- 任一维度锁定即返回 `429`，`retryAfter` 取所有维度中较大的剩余秒数；响应体不区分维度。
 - 客户端清 Cookie 或换浏览器视为新设备；拒绝 Cookie 的客户端仍受 IP 维度约束。
 - 全局失败计数（默认 60 次 / 5 分钟）只写一条告警日志并保留计数指标，不参与拒绝判断，
   避免攻击者用垃圾请求把正常用户锁在门外。
+
+**指纹轮换检测**（仅登录失败时记录，状态在进程内存）：
+
+```text
+key   = "fp:" + sha256(__Host-ha_device Cookie 值)[:16]
+value = 该 Cookie 在 5 分钟窗口内见过的不同 visitorId（最多保留 8 个）
+触发   = 不同 visitorId 数 > 3 → 该 Cookie 锁定 900 秒
+```
+
+- 成功登录只清 IP/设备锁，**不清**轮换集合，避免用正确动态码洗掉历史。
+- 触发后同样返回 `429 {"code":"rate_limited","message":"Too many attempts","retryAfter":900}`，
+  不暴露是轮换触发；日志只写 `deviceKey` 前 8 位，visitorId 与 Cookie 值不落日志。
+- 内存上限 4096 个 Cookie 条目；达到上限后新 Cookie 不做轮换跟踪（fail-open），
+  IP/设备两个维度仍然生效。
 
 ```bash
 # 第 6 次错误码（同一 IP）返回：
@@ -72,7 +96,7 @@ curl -s -X POST http://localhost:19260/api/login \
 |---|---|---|---|
 | GET | `/config.js` | 公开 | 登录页运行期配置（仅回跳白名单域名根） |
 | GET | `/auth` | 公开 | 登录页 |
-| POST | `/api/login` | 公开 + IP/设备限速 | TOTP 校验并签发会话令牌 |
+| POST | `/api/login` | 公开 + IP/设备/指纹限速 | TOTP 校验并签发会话令牌 |
 | GET | `/api/verify` | 会话令牌 | 校验令牌并返回身份，滑动续期 |
 | POST | `/api/logout` | 会话令牌 | 删除会话（连带撤销 SSO/共享 cookie） |
 | GET | `/api/sessions` | 会话令牌 | 登录设备列表 |
@@ -81,7 +105,7 @@ curl -s -X POST http://localhost:19260/api/login \
 | POST | `/api/totp/reset` | 会话令牌 | 两阶段重置①：写 pending |
 | POST | `/api/totp/confirm` | 会话令牌 | 两阶段重置②：pending 通过才转正 |
 | POST | `/api/totp/setup` | 公开（仅首启） | 旧模块：首次生成 secret |
-| POST | `/api/totp/login` | 公开 + IP/设备限速 | 旧模块：签发 HS256 JWT |
+| POST | `/api/totp/login` | 公开 + IP/设备/指纹限速 | 旧模块：签发 HS256 JWT |
 | POST | `/api/setup` | 公开（仅首启） | 旧模块别名 |
 | POST | `/api/reset` | Bearer JWT | 旧模块别名 |
 | GET | `/api/internal/sessions` | 内部令牌 | 按 `sub` 列出设备会话 |
@@ -141,9 +165,12 @@ curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:19260/auth?redirect=%
 
 - 鉴权：无。限速：IP 维度按真实客户端 IP（`X-Forwarded-For` 首段 → `X-Real-IP` → peer），
   每轮 5 次失败后按 60s/300s/900s 阶梯锁定；设备维度按 `__Host-ha_device` Cookie +
-  `User-Agent` + `Sec-CH-UA` + `Accept-Language` 计算，每轮 10 次失败后按 300s/900s/3600s
-  阶梯锁定。任一维度锁定即 429，`retryAfter` 取较大者，成功登录时两个维度都清零。
+  `User-Agent` + `Sec-CH-UA` + `Accept-Language` + 可信指纹计算，每轮 10 次失败后按
+  300s/900s/3600s 阶梯锁定；同一 Cookie 5 分钟内出现 >3 个不同 `visitorId` 时另锁 900 秒。
+  任一维度锁定即 429，`retryAfter` 取较大者，成功登录时 IP/设备两个维度清零（轮换集合保留）。
   详见 §0「登录限速与设备标识」。
+- 可选请求头：`X-Device-Fp`（32 位小写十六进制 visitorId）、`X-Device-Fp-Conf`
+  （0~1 的置信度，低于 0.3 时忽略指纹）。缺失或非法时退化为不带指纹的四字段哈希。
 - 请求体（JSON）：`code`（string，必填，6 位数字，允许空格）。
 
 ```bash
@@ -157,7 +184,7 @@ curl -s -X POST http://localhost:19260/api/login \
 
 | 状态 | `code` | 语义 |
 |---|---|---|
-| 429 | `rate_limited` | IP 或设备维度处于锁定档位（不区分来源，附 `retryAfter` 秒） |
+| 429 | `rate_limited` | IP、设备或指纹轮换维度处于锁定档位（不区分来源，附 `retryAfter` 秒） |
 | 403 | `totp_setup_required` | 尚未配置 TOTP |
 | 401 | `invalid_code` | 动态码错误（计入失败） |
 | 500 | `redis_unavailable` | Redis 不可用，拒绝发会话 |
@@ -264,7 +291,8 @@ curl -s -X POST http://localhost:19260/api/totp/confirm \
 
 旧 `totp-auth` 模块路由：校验 TOTP 后签发 **HS256 JWT**（`expiresIn:"12h"`，字符串）。
 IP 维度沿用模块原实现（按 peer IP，60s/300s/900s），并与 `/api/login` 共用同一个设备维度
-（`__Host-ha_device`，10 次 → 300s/900s/3600s）和全局告警计数。
+（`__Host-ha_device`，10 次 → 300s/900s/3600s）、同一指纹轮换锁（5 分钟 >3 个 visitorId →
+900 秒）和全局告警计数。可选请求头 `X-Device-Fp` / `X-Device-Fp-Conf`，规则见 §0。
 
 ### POST /api/reset
 

@@ -22,6 +22,8 @@ DATA_DIR=/var/lib/auth-server-go REDIS_DB=15 ./bin/auth-server-go
 ```
 
 依赖仅 `github.com/redis/go-redis/v9`；HTTP 用标准库 `net/http`，JWS/ES256 与 TOTP 均自实现。
+前端仅新增 `@fingerprintjs/fingerprintjs@5.3.0`（MIT，`monitoring:false`，无外联），登记见
+`THIRD-PARTY-NOTICES.md`。
 
 ## 环境变量
 
