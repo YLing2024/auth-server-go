@@ -119,16 +119,24 @@ func newFingerprintRotator() *fingerprintRotator {
 	return &fingerprintRotator{entries: make(map[string]*fpRotationEntry), now: func() int64 { return time.Now().UnixMilli() }}
 }
 
+// fingerprintRotationKey hashes the device cookie so the rotator map never
+// holds raw cookie values: "fp:" + sha256(cookie)[:16].
+func fingerprintRotationKey(cookieID string) string {
+	sum := sha256.Sum256([]byte(cookieID))
+	return "fp:" + hex.EncodeToString(sum[:])[:16]
+}
+
 // Status reports whether a cookie is currently locked by fingerprint rotation.
 func (f *fingerprintRotator) Status(cookieID string) (bool, int) {
 	if cookieID == "" {
 		return false, 0
 	}
+	key := fingerprintRotationKey(cookieID)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := f.now()
 	f.sweepLocked(now)
-	e := f.entries[cookieID]
+	e := f.entries[key]
 	if e == nil {
 		return false, 0
 	}
@@ -151,7 +159,8 @@ func (f *fingerprintRotator) Record(cookieID, visitorID string) (bool, int) {
 	now := f.now()
 	f.sweepLocked(now)
 
-	e := f.entries[cookieID]
+	key := fingerprintRotationKey(cookieID)
+	e := f.entries[key]
 	if e == nil {
 		// Fail open under memory pressure: tracking is best-effort, the IP and
 		// device dimensions still apply. This keeps hostile random cookies from
@@ -160,7 +169,7 @@ func (f *fingerprintRotator) Record(cookieID, visitorID string) (bool, int) {
 			return false, 0
 		}
 		e = &fpRotationEntry{seen: make(map[string]int64)}
-		f.entries[cookieID] = e
+		f.entries[key] = e
 	}
 	f.pruneLocked(e, now)
 	if e.lockedUntil > now {
