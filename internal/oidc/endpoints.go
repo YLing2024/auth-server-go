@@ -50,7 +50,7 @@ func (p *Provider) Discovery() DiscoveryDoc {
 		IDTokenSigningAlgValuesSupported:  []string{"ES256"},
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post", "none"},
 		SubjectTypesSupported:             []string{"public"},
-		ClaimsSupported:                   []string{"sub", "iss", "aud", "exp", "iat", "jti", "auth_time", "nonce", "preferred_username", "name"},
+		ClaimsSupported:                   []string{"sub", "iss", "aud", "exp", "iat", "jti", "auth_time", "nonce", "preferred_username", "name", "sid", "remember"},
 	}
 }
 
@@ -229,11 +229,17 @@ func (p *Provider) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if authTime == 0 {
 		authTime = p.now()
 	}
+	sessionExpiresIn := session.RemainingTTL
+	if sessionExpiresIn <= 0 {
+		sessionExpiresIn = p.ttlFor(session.Remember)
+	}
 	code := RandomToken(32)
 	rec := codeRecord{
 		ClientID: client.ClientID, RedirectURI: redirectURI,
 		CodeChallenge: codeChallenge,
 		Sub:           session.Sub, AuthTime: authTime, Scope: scope, SID: session.SID,
+		Remember:         boolValue(session.Remember),
+		SessionExpiresAt: p.now() + int64(sessionExpiresIn),
 	}
 	if codeChallenge != "" {
 		rec.CodeChallengeMethod = "S256"
@@ -253,22 +259,22 @@ func (p *Provider) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 			errorPage(w, http.StatusInternalServerError, "server_error", "首方令牌交换失败")
 			return
 		}
-		ssoToken, err := p.EnsureSsoSession(r.Context(), session, client)
+		ssoToken, cookieTTL, err := p.EnsureSsoSession(r.Context(), session, client)
 		if err != nil {
 			errorPage(w, http.StatusInternalServerError, "server_error", "会话写入失败")
 			return
 		}
-		p.setSsoCookie(w, ssoToken, client)
+		p.setSsoCookie(w, ssoToken, client, cookieTTL)
 		p.redirectWithQuery(w, r, redirectURI, state, "")
 		return
 	}
 
-	ssoToken, err := p.EnsureSsoSession(r.Context(), session, client)
+	ssoToken, cookieTTL, err := p.EnsureSsoSession(r.Context(), session, client)
 	if err != nil {
 		errorPage(w, http.StatusInternalServerError, "server_error", "会话写入失败")
 		return
 	}
-	p.setSsoCookie(w, ssoToken, client)
+	p.setSsoCookie(w, ssoToken, client, cookieTTL)
 	p.redirectWithQuery(w, r, redirectURI, state, code)
 }
 
@@ -367,6 +373,15 @@ func (p *Provider) handleRefresh(w http.ResponseWriter, r *http.Request, b body,
 		return
 	}
 	ttl, _ := c.TTL(r.Context(), key).Result()
+	remember := rec.remember()
+	expiresIn := int(rec.SessionExpiresAt - p.now())
+	if remember {
+		// Remembered sessions keep sliding with the refresh chain.
+		expiresIn = p.sessionTTL
+	} else if expiresIn <= 0 {
+		tokenError(w, "invalid_grant", "会话已过期，请重新登录", http.StatusBadRequest)
+		return
+	}
 	rec.Used = true
 	bodyRaw, _ := jsonx.Marshal(rec)
 	ttlSec := int(ttl.Seconds())
@@ -377,6 +392,7 @@ func (p *Provider) handleRefresh(w http.ResponseWriter, r *http.Request, b body,
 
 	tokens, err := p.issueTokens(r.Context(), issueParams{
 		Sub: rec.Sub, Client: client, Scope: rec.Scope, AuthTime: rec.AuthTime, SID: rec.SID, Chain: rec.Chain,
+		Remember: remember, ExpiresIn: expiresIn, SessionExpiresAt: p.now() + int64(expiresIn),
 	})
 	if err != nil {
 		p.logger.Error("refresh 签发失败", "error", err)
@@ -675,12 +691,12 @@ func (p *Provider) cookieHeader(value string, maxAge int, domain string) string 
 	return strings.Join(parts, "; ")
 }
 
-func (p *Provider) setSsoCookie(w http.ResponseWriter, token string, client *ClientRecord) {
+func (p *Provider) setSsoCookie(w http.ResponseWriter, token string, client *ClientRecord, maxAge int) {
 	domain := ""
 	if client != nil {
 		domain = client.CookieDomain
 	}
-	w.Header().Add("Set-Cookie", p.cookieHeader(token, p.sessionTTL, domain))
+	w.Header().Add("Set-Cookie", p.cookieHeader(token, maxAge, domain))
 }
 
 func (p *Provider) clearSsoCookie(w http.ResponseWriter, domain string) {

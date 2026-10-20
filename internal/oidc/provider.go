@@ -51,33 +51,37 @@ type Options struct {
 	DisplayName    string
 	LegacySubjects []string
 	SessionTTL     int
-	CookieName     string
-	AccessTTL      int
-	BackchannelURL string
-	InternalToken  string
-	Logger         *slog.Logger
+	// SessionShortTTL is the absolute lifetime for sessions without "remember
+	// me"; zero falls back to 900 seconds.
+	SessionShortTTL int
+	CookieName      string
+	AccessTTL       int
+	BackchannelURL  string
+	InternalToken   string
+	Logger          *slog.Logger
 }
 
 // Provider is the assembled OIDC implementation.
 type Provider struct {
-	store          *redis.Store
-	keyStore       *jwt.KeyStore
-	registry       *ClientRegistry
-	issuer         string
-	issuerOrigin   string
-	subject        string
-	displayName    string
-	legacy         map[string]bool
-	sessionTTL     int
-	cookieName     string
-	secureCookies  bool
-	accessTTL      int
-	refreshTTL     int
-	sidTTL         int
-	backchannelURL string
-	internalToken  string
-	logger         *slog.Logger
-	httpClient     *http.Client
+	store           *redis.Store
+	keyStore        *jwt.KeyStore
+	registry        *ClientRegistry
+	issuer          string
+	issuerOrigin    string
+	subject         string
+	displayName     string
+	legacy          map[string]bool
+	sessionTTL      int
+	shortSessionTTL int
+	cookieName      string
+	secureCookies   bool
+	accessTTL       int
+	refreshTTL      int
+	sidTTL          int
+	backchannelURL  string
+	internalToken   string
+	logger          *slog.Logger
+	httpClient      *http.Client
 	// loginPage is injected by the http layer: the embedded /auth login page.
 	loginPage http.Handler
 }
@@ -107,6 +111,10 @@ func New(opts Options) (*Provider, error) {
 	if accessTTL < 60 {
 		accessTTL = 900
 	}
+	shortSessionTTL := opts.SessionShortTTL
+	if shortSessionTTL <= 0 {
+		shortSessionTTL = 900
+	}
 	legacy := map[string]bool{}
 	for _, s := range opts.LegacySubjects {
 		legacy[s] = true
@@ -116,24 +124,25 @@ func New(opts Options) (*Provider, error) {
 		cookieName = "HomeAuth"
 	}
 	return &Provider{
-		store:          opts.Store,
-		keyStore:       keyStore,
-		registry:       registry,
-		issuer:         issuer,
-		issuerOrigin:   origin,
-		subject:        opts.Subject,
-		displayName:    opts.DisplayName,
-		legacy:         legacy,
-		sessionTTL:     opts.SessionTTL,
-		cookieName:     cookieName,
-		secureCookies:  strings.HasPrefix(issuer, "https://"),
-		accessTTL:      accessTTL,
-		refreshTTL:     RefreshTTL,
-		sidTTL:         maxInt(accessTTL, RefreshTTL),
-		backchannelURL: strings.TrimSpace(opts.BackchannelURL),
-		internalToken:  opts.InternalToken,
-		logger:         logger,
-		httpClient:     &http.Client{Timeout: 2 * time.Second},
+		store:           opts.Store,
+		keyStore:        keyStore,
+		registry:        registry,
+		issuer:          issuer,
+		issuerOrigin:    origin,
+		subject:         opts.Subject,
+		displayName:     opts.DisplayName,
+		legacy:          legacy,
+		sessionTTL:      opts.SessionTTL,
+		shortSessionTTL: shortSessionTTL,
+		cookieName:      cookieName,
+		secureCookies:   strings.HasPrefix(issuer, "https://"),
+		accessTTL:       accessTTL,
+		refreshTTL:      RefreshTTL,
+		sidTTL:          maxInt(accessTTL, RefreshTTL),
+		backchannelURL:  strings.TrimSpace(opts.BackchannelURL),
+		internalToken:   opts.InternalToken,
+		logger:          logger,
+		httpClient:      &http.Client{Timeout: 2 * time.Second},
 	}, nil
 }
 
@@ -173,6 +182,42 @@ type ResolvedSession struct {
 	SID      string
 	Source   string // legacy | sso | access
 	Raw      string
+	// Remember mirrors the session flag. A missing flag on an older record
+	// means true, so old sessions keep sliding.
+	Remember bool
+	// RemainingTTL is the session lifetime left in seconds at resolve time.
+	RemainingTTL int
+}
+
+// ttlFor returns the configured lifetime for a remember flag.
+func (p *Provider) ttlFor(remember bool) int {
+	if remember {
+		return p.sessionTTL
+	}
+	return p.shortSessionTTL
+}
+
+// keyTTLSeconds reads a Redis key TTL, falling back to the configured lifetime
+// when the key has no expiry or the query fails.
+func (p *Provider) keyTTLSeconds(ctx context.Context, key string, fallback int) int {
+	d, err := p.rdb().Client().TTL(ctx, key).Result()
+	if err != nil || d < 0 {
+		return fallback
+	}
+	n := int(d / time.Second)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// legacyRemember reads auth:session:<token>.remember. Missing means true.
+func (p *Provider) legacyRemember(ctx context.Context, token string) bool {
+	v, err := p.rdb().Client().HGet(ctx, "auth:session:"+token, "remember").Result()
+	if err != nil || v == "" {
+		return true
+	}
+	return v == "1"
 }
 
 // ValidateToken resolves a token against Redis. Legacy login sessions, SSO
@@ -185,20 +230,29 @@ func (p *Provider) ValidateToken(ctx context.Context, tok string) *ResolvedSessi
 
 	// 1) legacy login session (raw key)
 	if user, err := c.Get(ctx, tok).Result(); err == nil && user != "" {
-		_ = c.Expire(ctx, tok, seconds(p.sessionTTL)).Err()
+		remember := p.legacyRemember(ctx, tok)
+		remaining := p.keyTTLSeconds(ctx, tok, p.ttlFor(remember))
+		if remember {
+			_ = c.Expire(ctx, tok, seconds(p.sessionTTL)).Err()
+			remaining = p.sessionTTL
+		}
 		// Raw matters: EnsureSsoSession hashes it into the reverse index so that
 		// /api/logout and device kicks revoke the shared cookie immediately.
-		return &ResolvedSession{Sub: p.normalizeSub(user), AuthTime: p.now(), SID: SHA256Hex(tok)[:16], Source: "legacy", Raw: tok}
+		return &ResolvedSession{Sub: p.normalizeSub(user), AuthTime: p.now(), SID: SHA256Hex(tok)[:16], Source: "legacy", Raw: tok, Remember: remember, RemainingTTL: remaining}
 	}
 	// 2) first-party SSO cookie (hashed record)
 	if s, ok := p.getSSO(ctx, tok); ok {
-		return &ResolvedSession{Sub: p.normalizeSub(s.Sub), AuthTime: s.AuthTime, SID: s.SID, Source: "sso", Raw: tok}
+		remember := s.remember()
+		remaining := p.keyTTLSeconds(ctx, ssoPrefix+SHA256Hex(tok), p.ttlFor(remember))
+		return &ResolvedSession{Sub: p.normalizeSub(s.Sub), AuthTime: s.AuthTime, SID: s.SID, Source: "sso", Raw: tok, Remember: remember, RemainingTTL: remaining}
 	}
 	// 3) OIDC access token
 	if raw, err := c.Get(ctx, atPrefix+SHA256Hex(tok)).Result(); err == nil && raw != "" {
 		var a accessRecord
 		if json.Unmarshal([]byte(raw), &a) == nil {
-			return &ResolvedSession{Sub: p.normalizeSub(a.Sub), AuthTime: a.AuthTime, SID: a.SID, Source: "access"}
+			remember := a.remember()
+			remaining := p.keyTTLSeconds(ctx, atPrefix+SHA256Hex(tok), p.accessTTL)
+			return &ResolvedSession{Sub: p.normalizeSub(a.Sub), AuthTime: a.AuthTime, SID: a.SID, Source: "access", Remember: remember, RemainingTTL: remaining}
 		}
 	}
 	return nil
@@ -240,20 +294,30 @@ func (p *Provider) getSSO(ctx context.Context, token string) (*ssoRecord, bool) 
 }
 
 // EnsureSsoSession creates (or renews) the first-party shared cookie record and
-// returns the opaque SSO token. It also maintains the reverse index from the
-// originating login session so logout can revoke the cookie immediately.
-func (p *Provider) EnsureSsoSession(ctx context.Context, session *ResolvedSession, client *ClientRecord) (string, error) {
+// returns the opaque SSO token plus the lifetime the cookie should carry. It
+// also maintains the reverse index from the originating login session so logout
+// can revoke the cookie immediately.
+func (p *Provider) EnsureSsoSession(ctx context.Context, session *ResolvedSession, client *ClientRecord) (string, int, error) {
 	c := p.rdb().Client()
+	remember := session.Remember
 	if session.Source == "sso" && session.Raw != "" {
 		h := SHA256Hex(session.Raw)
-		_ = c.Expire(ctx, ssoPrefix+h, seconds(p.sessionTTL)).Err()
-		if rec, ok := p.getSSO(ctx, session.Raw); ok && rec.SessionHash != "" {
-			_ = c.Expire(ctx, ssoSessionIndex+rec.SessionHash, seconds(p.sessionTTL)).Err()
+		ttl := session.RemainingTTL
+		if remember {
+			ttl = p.sessionTTL
+			_ = c.Expire(ctx, ssoPrefix+h, seconds(p.sessionTTL)).Err()
+			if rec, ok := p.getSSO(ctx, session.Raw); ok && rec.SessionHash != "" {
+				_ = c.Expire(ctx, ssoSessionIndex+rec.SessionHash, seconds(p.sessionTTL)).Err()
+			}
+		}
+		if ttl <= 0 {
+			ttl = p.ttlFor(remember)
 		}
 		p.registerSidToken(ctx, session.SID, h)
-		return session.Raw, nil
+		return session.Raw, ttl, nil
 	}
 
+	ttl := p.ttlFor(remember)
 	token := RandomToken(32)
 	h := SHA256Hex(token)
 	rec := ssoRecord{
@@ -261,6 +325,7 @@ func (p *Provider) EnsureSsoSession(ctx context.Context, session *ResolvedSessio
 		AuthTime: firstNonZero(session.AuthTime, p.now()),
 		SID:      firstNonEmpty(session.SID, h[:16]),
 		ClientID: client.ClientID,
+		Remember: boolValue(remember),
 	}
 	sessionHash := ""
 	if session.Source == "legacy" && session.Raw != "" {
@@ -268,20 +333,20 @@ func (p *Provider) EnsureSsoSession(ctx context.Context, session *ResolvedSessio
 		rec.SessionHash = sessionHash
 	}
 	raw, _ := jsonx.Marshal(rec)
-	if err := c.Set(ctx, ssoPrefix+h, raw, seconds(p.sessionTTL)).Err(); err != nil {
-		return "", err
+	if err := c.Set(ctx, ssoPrefix+h, raw, seconds(ttl)).Err(); err != nil {
+		return "", 0, err
 	}
 	if sessionHash != "" {
 		idxKey := ssoSessionIndex + sessionHash
 		_ = c.SAdd(ctx, idxKey, h).Err()
-		_ = c.Expire(ctx, idxKey, seconds(p.sessionTTL)).Err()
+		_ = c.Expire(ctx, idxKey, seconds(ttl)).Err()
 	}
 	p.registerSidToken(ctx, rec.SID, h)
-	return token, nil
+	return token, ttl, nil
 }
 
-// VerifySsoToken validates a first-party SSO token for /api/verify, refreshing
-// the sliding TTL.
+// VerifySsoToken validates a first-party SSO token for /api/verify. Only
+// "remember me" SSO sessions slide; short ones keep their absolute deadline.
 func (p *Provider) VerifySsoToken(ctx context.Context, token string) (string, int64, bool) {
 	if token == "" || !p.available() {
 		return "", 0, false
@@ -292,9 +357,11 @@ func (p *Provider) VerifySsoToken(ctx context.Context, token string) (string, in
 	}
 	c := p.rdb().Client()
 	key := ssoPrefix + SHA256Hex(token)
-	_ = c.Expire(ctx, key, seconds(p.sessionTTL)).Err()
-	if rec.SessionHash != "" {
-		_ = c.Expire(ctx, ssoSessionIndex+rec.SessionHash, seconds(p.sessionTTL)).Err()
+	if rec.remember() {
+		_ = c.Expire(ctx, key, seconds(p.sessionTTL)).Err()
+		if rec.SessionHash != "" {
+			_ = c.Expire(ctx, ssoSessionIndex+rec.SessionHash, seconds(p.sessionTTL)).Err()
+		}
 	}
 	ttl, _ := c.TTL(ctx, key).Result()
 	exp := p.now() + maxInt64(0, int64(ttl.Seconds()))
@@ -429,6 +496,7 @@ type accessRecord struct {
 	SID      string `json:"sid"`
 	AuthTime int64  `json:"auth_time"`
 	Exp      int64  `json:"exp"`
+	Remember *bool  `json:"remember,omitempty"`
 }
 
 type ssoRecord struct {
@@ -437,16 +505,19 @@ type ssoRecord struct {
 	SID         string `json:"sid"`
 	ClientID    string `json:"client_id"`
 	SessionHash string `json:"session_hash,omitempty"`
+	Remember    *bool  `json:"remember,omitempty"`
 }
 
 type refreshRecord struct {
-	Sub      string `json:"sub"`
-	ClientID string `json:"client_id"`
-	Scope    string `json:"scope"`
-	SID      string `json:"sid"`
-	AuthTime int64  `json:"auth_time"`
-	Chain    string `json:"chain"`
-	Used     bool   `json:"used"`
+	Sub              string `json:"sub"`
+	ClientID         string `json:"client_id"`
+	Scope            string `json:"scope"`
+	SID              string `json:"sid"`
+	AuthTime         int64  `json:"auth_time"`
+	Chain            string `json:"chain"`
+	Used             bool   `json:"used"`
+	Remember         *bool  `json:"remember,omitempty"`
+	SessionExpiresAt int64  `json:"session_expires_at,omitempty"`
 }
 
 type codeRecord struct {
@@ -459,6 +530,8 @@ type codeRecord struct {
 	AuthTime            int64  `json:"auth_time"`
 	Scope               string `json:"scope"`
 	SID                 string `json:"sid"`
+	Remember            *bool  `json:"remember,omitempty"`
+	SessionExpiresAt    int64  `json:"session_expires_at,omitempty"`
 }
 
 type issueParams struct {
@@ -469,6 +542,32 @@ type issueParams struct {
 	AuthTime int64
 	SID      string
 	Chain    string
+	Remember bool
+	// ExpiresIn is the session lifetime advertised to the caller. It is not the
+	// access_token lifetime, which stays at accessTTL.
+	ExpiresIn int
+	// SessionExpiresAt is the absolute session deadline (Unix seconds).
+	SessionExpiresAt int64
+}
+
+// boolValue returns a stable pointer for JSON records. A nil pointer on read
+// means the record predates the remember flag, i.e. remember=1.
+func boolValue(v bool) *bool { return &v }
+
+func (r *accessRecord) remember() bool {
+	return r == nil || r.Remember == nil || *r.Remember
+}
+
+func (r *ssoRecord) remember() bool {
+	return r == nil || r.Remember == nil || *r.Remember
+}
+
+func (r *refreshRecord) remember() bool {
+	return r == nil || r.Remember == nil || *r.Remember
+}
+
+func (r *codeRecord) remember() bool {
+	return r == nil || r.Remember == nil || *r.Remember
 }
 
 // TokenSet is the /token response body. Field order matches the legacy
@@ -505,6 +604,7 @@ type idClaims struct {
 	Name              string `json:"name"`
 	Nonce             string `json:"nonce,omitempty"`
 	SID               string `json:"sid,omitempty"`
+	Remember          bool   `json:"remember"`
 }
 
 func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenSet, error) {
@@ -524,7 +624,7 @@ func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenS
 	if err != nil {
 		return nil, err
 	}
-	atRec := accessRecord{Sub: params.Sub, ClientID: params.Client.ClientID, Scope: scope, SID: params.SID, AuthTime: params.AuthTime, Exp: t + int64(p.accessTTL)}
+	atRec := accessRecord{Sub: params.Sub, ClientID: params.Client.ClientID, Scope: scope, SID: params.SID, AuthTime: params.AuthTime, Exp: t + int64(p.accessTTL), Remember: boolValue(params.Remember)}
 	atRaw, _ := jsonx.Marshal(atRec)
 	if err := c.Set(ctx, atPrefix+SHA256Hex(accessToken), atRaw, seconds(p.accessTTL)).Err(); err != nil {
 		return nil, err
@@ -535,6 +635,7 @@ func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenS
 		Iss: p.issuer, Sub: params.Sub, Aud: params.Client.ClientID,
 		Exp: t + int64(p.accessTTL), Iat: t, AuthTime: firstNonZero(params.AuthTime, t),
 		PreferredUsername: p.subject, Name: p.displayName, Nonce: params.Nonce,
+		Remember: params.Remember,
 	}
 	if params.SID != "" {
 		idPayload.SID = params.SID
@@ -544,7 +645,15 @@ func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenS
 		return nil, err
 	}
 
-	out := &TokenSet{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: p.accessTTL, IDToken: idToken, Scope: scope}
+	expiresIn := params.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = p.ttlFor(params.Remember)
+	}
+	sessionExpiresAt := params.SessionExpiresAt
+	if sessionExpiresAt <= 0 {
+		sessionExpiresAt = t + int64(expiresIn)
+	}
+	out := &TokenSet{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: expiresIn, IDToken: idToken, Scope: scope}
 
 	if p.registry.AllowsGrant(params.Client, "refresh_token") {
 		refreshToken := RandomToken(32)
@@ -552,7 +661,7 @@ func (p *Provider) issueTokens(ctx context.Context, params issueParams) (*TokenS
 		if chain == "" {
 			chain = RandomToken(16)
 		}
-		rtRec := refreshRecord{Sub: params.Sub, ClientID: params.Client.ClientID, Scope: scope, SID: params.SID, AuthTime: params.AuthTime, Chain: chain, Used: false}
+		rtRec := refreshRecord{Sub: params.Sub, ClientID: params.Client.ClientID, Scope: scope, SID: params.SID, AuthTime: params.AuthTime, Chain: chain, Used: false, Remember: boolValue(params.Remember), SessionExpiresAt: sessionExpiresAt}
 		rtRaw, _ := jsonx.Marshal(rtRec)
 		rh := SHA256Hex(refreshToken)
 		if err := c.Set(ctx, rtPrefix+rh, rtRaw, seconds(p.refreshTTL)).Err(); err != nil {
@@ -623,9 +732,16 @@ func (p *Provider) exchangeCode(ctx context.Context, params exchangeParams) (*To
 	} else if !p.registry.IsConfidential(params.Client) && !params.Client.FirstParty {
 		return nil, oauthErr("invalid_grant", "公开客户端必须使用 PKCE")
 	}
+	remember := rec.remember()
+	expiresIn := int(rec.SessionExpiresAt - p.now())
+	if expiresIn <= 0 {
+		expiresIn = p.ttlFor(remember)
+	}
 	return p.issueTokens(ctx, issueParams{
 		Sub: rec.Sub, Client: params.Client, Scope: rec.Scope,
 		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SID: rec.SID,
+		Remember: remember, ExpiresIn: expiresIn,
+		SessionExpiresAt: p.now() + int64(expiresIn),
 	})
 }
 
