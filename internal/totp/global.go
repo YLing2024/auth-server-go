@@ -1,9 +1,12 @@
 package totp
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // defaultGlobalWindow is the observation window for the global failure counter.
-const defaultGlobalWindow = 5 * 60 * 1000 // milliseconds
+const defaultGlobalWindow = 5 * time.Minute
 
 // GlobalCounter counts failed logins across every client inside a fixed
 // window and raises at most one alert per window. It is intentionally not a
@@ -12,12 +15,12 @@ const defaultGlobalWindow = 5 * 60 * 1000 // milliseconds
 type GlobalCounter struct {
 	mu        sync.Mutex
 	threshold int
-	window    int64 // milliseconds
-	start     int64
+	window    time.Duration
+	start     time.Time
 	failures  int
 	total     uint64
 	alerted   bool
-	now       func() int64
+	now       func() time.Time
 }
 
 // GlobalStatus is a snapshot of the counter, suitable for diagnostics.
@@ -37,7 +40,7 @@ type GlobalAlert struct {
 
 // NewGlobalCounter builds a counter. A non-positive threshold falls back to 60;
 // a non-positive window falls back to five minutes.
-func NewGlobalCounter(threshold int, window int64) *GlobalCounter {
+func NewGlobalCounter(threshold int, window time.Duration) *GlobalCounter {
 	if threshold <= 0 {
 		threshold = 60
 	}
@@ -47,14 +50,14 @@ func NewGlobalCounter(threshold int, window int64) *GlobalCounter {
 	return &GlobalCounter{
 		threshold: threshold,
 		window:    window,
-		now:       defaultNowMillis,
+		now:       time.Now,
 	}
 }
 
 // rollLocked starts a fresh window when the current one has elapsed. The
 // caller must hold g.mu.
-func (g *GlobalCounter) rollLocked(now int64) {
-	if g.start == 0 || now-g.start >= g.window {
+func (g *GlobalCounter) rollLocked(now time.Time) {
+	if g.start.IsZero() || now.Sub(g.start) >= g.window {
 		g.start = now
 		g.failures = 0
 		g.alerted = false

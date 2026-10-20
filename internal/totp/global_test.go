@@ -1,14 +1,17 @@
 package totp
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestGlobalCounterAlertsOncePerWindow checks the global counter is an alerting
 // device only: it crosses once per five-minute window and keeps a lifetime
 // total for diagnostics.
 func TestGlobalCounterAlertsOncePerWindow(t *testing.T) {
-	now := int64(1_000_000_000_000)
+	now := time.Unix(1_000_000_000, 0)
 	g := NewGlobalCounter(60, defaultGlobalWindow)
-	g.now = func() int64 { return now }
+	g.now = func() time.Time { return now }
 
 	for i := 0; i < 59; i++ {
 		if _, alerted := g.RecordFailure(); alerted {
@@ -37,7 +40,7 @@ func TestGlobalCounterAlertsOncePerWindow(t *testing.T) {
 	}
 
 	// A new window starts clean but the lifetime total keeps growing.
-	now += defaultGlobalWindow
+	now = now.Add(defaultGlobalWindow)
 	if st := g.Status(); st.WindowFailures != 0 || st.Alerted || st.TotalFailures != 70 {
 		t.Fatalf("new window status = %+v", st)
 	}
