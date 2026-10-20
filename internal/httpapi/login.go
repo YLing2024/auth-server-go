@@ -137,8 +137,8 @@ type loginBody struct {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	body := readJSONBody(r)
 	ip := clientIP(r)
-	deviceKey := DeviceKeyFromRequest(w, r)
-	if locked, retryAfter := s.loginLockStatus(s.appLimiter, ip, deviceKey); locked {
+	dev := DeviceIdentityFromRequest(w, r)
+	if locked, retryAfter := s.loginLockStatus(s.appLimiter, ip, dev); locked {
 		writeJSON(w, http.StatusTooManyRequests, newRateLimitBody(retryAfter))
 		return
 	}
@@ -149,11 +149,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimSpace(bodyString(body, "code"))
 	if !totp.Verify(secret, code, totp.DefaultWindow) {
-		s.recordLoginFailure(s.appLimiter, ip, deviceKey)
+		s.recordLoginFailure(s.appLimiter, ip, dev)
 		writeJSON(w, http.StatusUnauthorized, errorBody{Code: "invalid_code", Message: "Invalid TOTP code"})
 		return
 	}
-	s.clearLoginFailures(s.appLimiter, ip, deviceKey)
+	s.clearLoginFailures(s.appLimiter, ip, dev)
 
 	if !s.store.Available() {
 		s.log().Error("login: redis 不可用，拒绝签发会话")

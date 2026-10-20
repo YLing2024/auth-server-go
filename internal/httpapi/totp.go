@@ -160,8 +160,8 @@ func (s *Server) moduleAuthOK(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) handleModuleLogin(w http.ResponseWriter, r *http.Request) {
 	body := readJSONBody(r)
 	ip := remoteIP(r)
-	deviceKey := DeviceKeyFromRequest(w, r)
-	if locked, retryAfter := s.loginLockStatus(s.moduleLimiter, ip, deviceKey); locked {
+	dev := DeviceIdentityFromRequest(w, r)
+	if locked, retryAfter := s.loginLockStatus(s.moduleLimiter, ip, dev); locked {
 		writeJSON(w, http.StatusTooManyRequests, newRateLimitBody(retryAfter))
 		return
 	}
@@ -172,11 +172,11 @@ func (s *Server) handleModuleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimSpace(bodyString(body, "code"))
 	if !totp.Verify(secret, code, totp.DefaultWindow) {
-		s.recordLoginFailure(s.moduleLimiter, ip, deviceKey)
+		s.recordLoginFailure(s.moduleLimiter, ip, dev)
 		writeJSON(w, http.StatusUnauthorized, errorBody{Code: "invalid_code", Message: "Invalid TOTP code"})
 		return
 	}
-	s.clearLoginFailures(s.moduleLimiter, ip, deviceKey)
+	s.clearLoginFailures(s.moduleLimiter, ip, dev)
 	token, err := jwt.SignHS256(map[string]any{"sub": s.cfg.DisplayName, "ip": ip}, s.cfg.JWTSecret, 12*time.Hour)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "server_error", Message: "签发失败"})

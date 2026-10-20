@@ -36,6 +36,7 @@ type Server struct {
 	moduleLimiter *totp.RateLimiter
 	deviceLimiter *totp.RateLimiter
 	globalLimiter *totp.GlobalCounter
+	fpRotator     *fingerprintRotator
 
 	geo *geoResolver
 
@@ -65,6 +66,7 @@ func New(cfg *config.Config, store *redis.Store, provider *oidc.Provider, public
 		moduleLimiter:  totp.NewRateLimiter(cfg.RateLimitIPMax, []int{60, 300, 900}),
 		deviceLimiter:  totp.NewRateLimiter(cfg.RateLimitDeviceMax, []int{300, 900, 3600}),
 		globalLimiter:  totp.NewGlobalCounter(cfg.RateLimitGlobalMax, 5*time.Minute),
+		fpRotator:      newFingerprintRotator(),
 		geo:            newGeoResolver(cfg.GeoIPURL, store),
 		subject:        cfg.Subject,
 		legacySubjects: map[string]bool{},
