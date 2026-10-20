@@ -359,11 +359,12 @@ function SignedInPage({ mode, me, onLogout, onExpired }: SignedInPageProps) {
         <CardHeader mode={mode} />
 
         <div className="auth-status">
-          <CheckCircleFilled
-            aria-hidden="true"
-            className="auth-status-icon"
-            style={{ color: token.colorSuccess }}
-          />
+          <span aria-hidden="true">
+            <CheckCircleFilled
+              className="auth-status-icon"
+              style={{ color: token.colorSuccess }}
+            />
+          </span>
           <Typography.Title level={4} style={{ margin: '12px 0 4px' }}>
             已登录
           </Typography.Title>
