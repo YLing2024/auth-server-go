@@ -57,6 +57,13 @@ type Config struct {
 
 	// AccessTTL is the access_token / id_token lifetime in seconds.
 	AccessTTL int
+
+	// Login rate-limit thresholds. The IP dimension keeps the legacy ladder;
+	// the device dimension is deliberately wider because one device may be
+	// shared by several people. The global counter only alerts.
+	RateLimitIPMax     int
+	RateLimitDeviceMax int
+	RateLimitGlobalMax int
 }
 
 // LegacySubjects returns the historical identity labels to normalise on read.
@@ -93,6 +100,18 @@ func Load() (*Config, error) {
 	}
 	if c.RedisDB, err = envInt("REDIS_DB", 0); err != nil {
 		return nil, err
+	}
+	if c.RateLimitIPMax, err = envInt("SSO_RL_IP_MAX", 5); err != nil {
+		return nil, err
+	}
+	if c.RateLimitDeviceMax, err = envInt("SSO_RL_DEVICE_MAX", 10); err != nil {
+		return nil, err
+	}
+	if c.RateLimitGlobalMax, err = envInt("SSO_RL_GLOBAL_MAX", 60); err != nil {
+		return nil, err
+	}
+	if c.RateLimitIPMax <= 0 || c.RateLimitDeviceMax <= 0 || c.RateLimitGlobalMax <= 0 {
+		return nil, fmt.Errorf("config: SSO_RL_IP_MAX/SSO_RL_DEVICE_MAX/SSO_RL_GLOBAL_MAX 必须为正整数")
 	}
 	if c.SessionDays, err = envInt("SESSION_DAYS", 7); err != nil {
 		return nil, err
