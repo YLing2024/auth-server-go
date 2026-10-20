@@ -734,8 +734,12 @@ func (p *Provider) exchangeCode(ctx context.Context, params exchangeParams) (*To
 	}
 	remember := rec.remember()
 	expiresIn := int(rec.SessionExpiresAt - p.now())
-	if expiresIn <= 0 {
-		expiresIn = p.ttlFor(remember)
+	if remember {
+		if expiresIn <= 0 {
+			expiresIn = p.ttlFor(remember)
+		}
+	} else if expiresIn <= 0 {
+		return nil, oauthErr("invalid_grant", "会话已过期，请重新登录")
 	}
 	return p.issueTokens(ctx, issueParams{
 		Sub: rec.Sub, Client: params.Client, Scope: rec.Scope,
