@@ -165,4 +165,3 @@ export function isSessionExpired(
 ): boolean {
   return !!expiresAt && Number.isFinite(expiresAt) && expiresAt <= nowSeconds;
 }
-
