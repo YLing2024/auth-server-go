@@ -400,7 +400,7 @@ curl -s -X POST http://localhost:19260/token \
 
 | 状态 | `error` | 语义 |
 |---|---|---|
-| 400 | `invalid_grant` | 授权码无效/已用/过期，或 refresh 已用（整链作废） |
+| 400 | `invalid_grant` | 授权码无效/已用/过期，短会话已到绝对到期时间，或 refresh 已用（整链作废） |
 | 400 | `invalid_request` | 缺参数 / 参数不匹配 |
 | 401 | `invalid_client` | 未知客户端或密钥错误 |
 | 400 | `unsupported_grant_type` | 不支持的 grant_type |
