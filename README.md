@@ -9,7 +9,7 @@ Express）**字节级兼容**，可与旧服务并存甚至互认彼此签发的
   end_session / revoke，ES256（P-256，`kid` = thumbprint）
 - 登录设备会话管理（列表 / 改名 / 踢下线）+ 来源 GeoIP
 - TOTP **两阶段重置**（pending 验证通过才转正，永不把已登录的人锁在外面）
-- 按真实客户端 IP 阶梯限速（60s → 300s → 900s）
+- 按真实客户端 IP + 浏览器设备双维度阶梯限速（IP 60s → 300s → 900s，设备 300s → 900s → 3600s）
 
 默认只监听 `127.0.0.1:19260`（旧服务 `3200` 不动，两个并存）。对外域名由部署决定，
 不写进仓库。
@@ -38,6 +38,7 @@ DATA_DIR=/var/lib/auth-server-go REDIS_DB=15 ./bin/auth-server-go
 | `SESSION_DAYS` | `7` | 会话滑动过期天数 |
 | `INTERNAL_TOKEN_FILE` | `<DATA_DIR>/internal-token` | 0600 自动生成；值不打印不返回 |
 | `ALLOWED_REDIRECT_ROOTS` | 空（仅同源） | 登录页跨域回跳白名单域名根，逗号分隔 |
+| `SSO_RL_IP_MAX` / `SSO_RL_DEVICE_MAX` / `SSO_RL_GLOBAL_MAX` | `5` / `10` / `60` | 登录限速阈值（全局计数只告警不拒绝） |
 
 ## 文档
 
@@ -59,7 +60,7 @@ cmd/auth-server-go/   进程入口
 internal/config/      环境变量与默认值
 internal/jsonx/       无 HTML 转义的 JSON 序列化（对齐 JSON.stringify）
 internal/jwt/         ES256 / HS256 JWS 与密钥库
-internal/totp/        RFC 6238 TOTP、密钥存储、阶梯限速
+internal/totp/        RFC 6238 TOTP、密钥存储、阶梯限速与全局告警计数
 internal/redis/       Redis 客户端与就绪探测
 internal/oidc/        OIDC Provider 与各端点
 internal/httpapi/     HTTP 路由表与会话/内部接口/登录页伺服

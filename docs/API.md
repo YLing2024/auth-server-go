@@ -40,6 +40,31 @@
 | `ALLOWED_REDIRECT_ROOTS` | 空（仅同源） | 登录页允许跨域回跳的域名根，逗号分隔 |
 | `GATEWAY_BACKCHANNEL_URL` | `http://127.0.0.1:18920/_auth/backchannel-logout` | 全局登出 back-channel 目标 |
 | `ACCESS_TTL_SEC` | `900` | access/id token 有效期（秒），`>=60` 才生效 |
+| `SSO_RL_IP_MAX` | `5` | IP 维度每轮失败次数，阶梯 60s/300s/900s |
+| `SSO_RL_DEVICE_MAX` | `10` | 设备维度每轮失败次数，阶梯 300s/900s/3600s |
+| `SSO_RL_GLOBAL_MAX` | `60` | 全局失败告警阈值（5 分钟窗口，只告警不拒绝） |
+
+### 登录限速与设备标识
+
+`/api/login` 与 `/api/totp/login` 同时按 **IP** 与 **设备** 两个维度计数：
+
+- 首次访问 `/auth` 或提交登录时，服务端下发 `__Host-ha_device` Cookie：128 位随机数的
+  32 位小写十六进制，属性固定为 `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=31536000`
+  （一年，无 `Domain`）。`__Host-` 前缀要求这三个属性同时成立。
+- `deviceKey = sha256(Cookie 值 + User-Agent + Sec-CH-UA + Accept-Language)`，只在进程内作为
+  限速 key；不写 Redis、不写审计、日志最多出现其前 8 位。
+- 失败一次：IP 与设备各记一次；成功一次：两个维度都清零。
+- 任一维度锁定即返回 `429`，`retryAfter` 取两个维度中较大的剩余秒数；响应体不区分维度。
+- 客户端清 Cookie 或换浏览器视为新设备；拒绝 Cookie 的客户端仍受 IP 维度约束。
+- 全局失败计数（默认 60 次 / 5 分钟）只写一条告警日志并保留计数指标，不参与拒绝判断，
+  避免攻击者用垃圾请求把正常用户锁在门外。
+
+```bash
+# 第 6 次错误码（同一 IP）返回：
+curl -s -X POST http://localhost:19260/api/login \
+  -H 'Content-Type: application/json' -d '{"code":"000000"}'
+# {"code":"rate_limited","message":"Too many attempts","retryAfter":60}
+```
 
 ## 1. 端点索引
 
@@ -47,7 +72,7 @@
 |---|---|---|---|
 | GET | `/config.js` | 公开 | 登录页运行期配置（仅回跳白名单域名根） |
 | GET | `/auth` | 公开 | 登录页 |
-| POST | `/api/login` | 公开 + IP 限速 | TOTP 校验并签发会话令牌 |
+| POST | `/api/login` | 公开 + IP/设备限速 | TOTP 校验并签发会话令牌 |
 | GET | `/api/verify` | 会话令牌 | 校验令牌并返回身份，滑动续期 |
 | POST | `/api/logout` | 会话令牌 | 删除会话（连带撤销 SSO/共享 cookie） |
 | GET | `/api/sessions` | 会话令牌 | 登录设备列表 |
@@ -56,7 +81,7 @@
 | POST | `/api/totp/reset` | 会话令牌 | 两阶段重置①：写 pending |
 | POST | `/api/totp/confirm` | 会话令牌 | 两阶段重置②：pending 通过才转正 |
 | POST | `/api/totp/setup` | 公开（仅首启） | 旧模块：首次生成 secret |
-| POST | `/api/totp/login` | 公开 + IP 限速 | 旧模块：签发 HS256 JWT |
+| POST | `/api/totp/login` | 公开 + IP/设备限速 | 旧模块：签发 HS256 JWT |
 | POST | `/api/setup` | 公开（仅首启） | 旧模块别名 |
 | POST | `/api/reset` | Bearer JWT | 旧模块别名 |
 | GET | `/api/internal/sessions` | 内部令牌 | 按 `sub` 列出设备会话 |
@@ -102,7 +127,9 @@ curl -s http://localhost:19260/config.js
 返回内嵌的登录页 `index.html`（Ant Design 构建产物）。`?redirect=` 为登录后回跳地址，白名单语义与旧实现一致。
 
 - 鉴权：无。参数：`redirect`（query，可选，字符串）。
-- 响应：`200 text/html; charset=utf-8`，`Cache-Control: public, max-age=0`。
+- 响应：`200 text/html; charset=utf-8`，`Cache-Control: public, max-age=0`；首次访问（无有效
+  `__Host-ha_device`）同时下发一年期设备 Cookie，该次响应改为 `Cache-Control: no-store`，
+  避免共享缓存把某个访客的设备标识发给别人。
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:19260/auth?redirect=%2F'
@@ -112,8 +139,11 @@ curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:19260/auth?redirect=%
 
 校验 TOTP 动态码，签发 Redis 会话令牌。身份恒为 `SSO_SUBJECT`。
 
-- 鉴权：无。限速：按真实客户端 IP（`X-Forwarded-For` 首段 → `X-Real-IP` → peer），阶梯 60s/300s/900s，
-  每轮 5 次失败升一档，成功清零。
+- 鉴权：无。限速：IP 维度按真实客户端 IP（`X-Forwarded-For` 首段 → `X-Real-IP` → peer），
+  每轮 5 次失败后按 60s/300s/900s 阶梯锁定；设备维度按 `__Host-ha_device` Cookie +
+  `User-Agent` + `Sec-CH-UA` + `Accept-Language` 计算，每轮 10 次失败后按 300s/900s/3600s
+  阶梯锁定。任一维度锁定即 429，`retryAfter` 取较大者，成功登录时两个维度都清零。
+  详见 §0「登录限速与设备标识」。
 - 请求体（JSON）：`code`（string，必填，6 位数字，允许空格）。
 
 ```bash
@@ -127,7 +157,7 @@ curl -s -X POST http://localhost:19260/api/login \
 
 | 状态 | `code` | 语义 |
 |---|---|---|
-| 429 | `rate_limited` | IP 处于锁定档位（附 `retryAfter` 秒） |
+| 429 | `rate_limited` | IP 或设备维度处于锁定档位（不区分来源，附 `retryAfter` 秒） |
 | 403 | `totp_setup_required` | 尚未配置 TOTP |
 | 401 | `invalid_code` | 动态码错误（计入失败） |
 | 500 | `redis_unavailable` | Redis 不可用，拒绝发会话 |
@@ -232,8 +262,9 @@ curl -s -X POST http://localhost:19260/api/totp/confirm \
 
 ### POST /api/totp/login
 
-旧 `totp-auth` 模块路由：校验 TOTP 后签发 **HS256 JWT**（`expiresIn:"12h"`，字符串），
-身份与限速语义同模块原实现（按 peer IP）。
+旧 `totp-auth` 模块路由：校验 TOTP 后签发 **HS256 JWT**（`expiresIn:"12h"`，字符串）。
+IP 维度沿用模块原实现（按 peer IP，60s/300s/900s），并与 `/api/login` 共用同一个设备维度
+（`__Host-ha_device`，10 次 → 300s/900s/3600s）和全局告警计数。
 
 ### POST /api/reset
 
@@ -431,6 +462,8 @@ curl -s -o /dev/null -D - 'http://localhost:19260/end_session?post_logout_redire
   refresh 30 天；sid 记录 `max(access,refresh)`；pending 重置 300s。
 - **枚举**：`userinfo.token_type` ∈ {`access_token`,`refresh_token`}；`introspect` 同；
   `deviceName` 截断至 64 字符；`isLocal` ∈ {`"0"`,`"1"`}。
+- **设备标识**：`__Host-ha_device` 只存在客户端 Cookie 中；派生的 `deviceKey` 只作为进程内限速
+  key，不入 Redis、不入审计日志（日志最多前 8 位）。
 
 ### Redis 键空间
 

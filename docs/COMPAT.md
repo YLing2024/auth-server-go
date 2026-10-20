@@ -18,7 +18,8 @@
   `oidc:sid:*`。登出 / 踢下线同设备去重均连带删 `oidc:sso:<哈希>`。
 - **`/api/internal/*`**：只认 `X-Internal-Token`；`sub` 必须等于 `SSO_SUBJECT`（缺 → 400，
   非本实例 → 404）；与对外两阶段重置共用同一实现。
-- **限速**：按真实客户端 IP（`X-Real-IP`）阶梯 60s → 300s → 900s。
+- **限速（IP 维度）**：按真实客户端 IP（`X-Real-IP`）阶梯 60s → 300s → 900s；新增的设备维度
+  属于有意差异，见 §3.7。
 - **身份**：唯一来源 `SSO_SUBJECT`；历史标签 `HomeAuth` 读取时归一化。
 - **JSON 与落库字节**：一律不转义 `<` `>` `&`（等价 JS `JSON.stringify`），多字段成功响应
   用有序结构体固定字段顺序。
@@ -78,6 +79,23 @@
 
 - `/favicon.ico` 两者都返回 404（浏览器自动请求，非缺陷）。
 - 根路径非 OIDC 请求两者都返回 404。
+
+### 3.7 登录限速新增设备维度
+
+旧实现只按 IP 计数，攻击者用 IP 池时每个地址只试几次即可绕过。新实现在保留 IP 维度
+（5 次 → 60s/300s/900s）的同时，增加并行的设备维度：
+
+- `/auth` 与登录提交接口下发 `__Host-ha_device`（128 位随机、`HttpOnly; Secure;
+  SameSite=Lax; Path=/; Max-Age=31536000`），
+  `deviceKey = sha256(Cookie + User-Agent + Sec-CH-UA + Accept-Language)`。
+- 设备维度 10 次失败 → 300s/900s/3600s；任一维度锁定即 429，`retryAfter` 取较大者，
+  响应不区分维度。成功登录清零两个维度。
+- 全局失败计数（默认 60 次 / 5 分钟）只告警，不参与拒绝。阈值由 `SSO_RL_IP_MAX` /
+  `SSO_RL_DEVICE_MAX` / `SSO_RL_GLOBAL_MAX` 调整。
+- 隐私边界：不采集 canvas/字体/硬件信息；`deviceKey` 不落库，日志最多前 8 位。
+- 429 文案统一为 `{"code":"rate_limited","message":"Too many attempts","retryAfter":N}`，
+  仅 `code` 参与前端判断。
+- 代价：清 Cookie 或换浏览器即视为新设备；不接收 Cookie 的客户端只受 IP 维度约束。
 
 ## 4. 已知风险与未覆盖
 
