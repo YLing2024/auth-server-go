@@ -53,6 +53,8 @@ func TestOrderedBodies(t *testing.T) {
 		{"okMessage", okMessageBody{OK: true, Message: "Session revoked"}, `{"ok":true,"message":"Session revoked"}`},
 		{"okDevice", okDeviceBody{OK: true, DeviceName: "X"}, `{"ok":true,"deviceName":"X"}`},
 		{"secret", secretBody{Secret: "S", OtpauthURI: "otpauth://x?a=1&b=2"}, `{"secret":"S","otpauthUri":"otpauth://x?a=1&b=2"}`},
+		{"meSignedIn", meSignedIn{Authenticated: true, Subject: "linden", DisplayName: "Linden", CreatedAt: 1, ExpiresAt: 2, Remember: false}, `{"authenticated":true,"subject":"linden","displayName":"Linden","createdAt":1,"expiresAt":2,"remember":false}`},
+		{"meSignedOut", meSignedOut{Authenticated: false}, `{"authenticated":false}`},
 	} {
 		out, err := jsonx.Marshal(tc.v)
 		if err != nil {
@@ -70,6 +72,7 @@ func TestRouteTableMethodVerbs(t *testing.T) {
 	want := map[string]string{
 		"/api/login":                        http.MethodPost,
 		"/api/verify":                       http.MethodGet,
+		"/api/me":                           http.MethodGet,
 		"/api/sessions/{id}":                http.MethodDelete,
 		"/.well-known/openid-configuration": "",
 	}

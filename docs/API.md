@@ -15,7 +15,7 @@
 | 通道 | 凭证 | 适用端点 | 失败响应 |
 |---|---|---|---|
 | 公开 | 无 | `/auth`、`/config.js`、`/api/login`、`/api/totp/setup`、OIDC discovery/jwks | 见各端点 |
-| 会话令牌 | `?token=` / `X-Auth-Token` / `Authorization: Bearer <64 位十六进制会话令牌>` | `/api/verify`、`/api/logout`、`/api/sessions*`、`/api/totp/reset|confirm` | `401 {"code":"unauthorized"}` |
+| 会话令牌 | `?token=` / `X-Auth-Token` / `Authorization: Bearer <64 位十六进制会话令牌>`；`/api/me`、`/api/logout` 另接受 `HomeAuth` Cookie | `/api/verify`、`/api/me`、`/api/logout`、`/api/sessions*`、`/api/totp/reset|confirm` | `401 {"code":"unauthorized"}` |
 | 内部令牌 | `X-Internal-Token: <INTERNAL_TOKEN_FILE 内容>` | `/api/internal/*` | `401 {"code":"unauthorized"}` |
 | OIDC | 客户端凭证 / PKCE / Bearer access_token | OIDC 端点 | OAuth 错误码，见各端点 |
 
@@ -99,7 +99,8 @@ curl -s -X POST http://localhost:19260/api/login \
 | GET | `/auth` | 公开 | 登录页 |
 | POST | `/api/login` | 公开 + IP/设备/指纹限速 | TOTP 校验并签发会话令牌 |
 | GET | `/api/verify` | 会话令牌 | 校验令牌并返回身份，滑动续期 |
-| POST | `/api/logout` | 会话令牌 | 删除会话（连带撤销 SSO/共享 cookie） |
+| GET | `/api/me` | `HomeAuth` Cookie（只读） | 返回登录状态页所需信息，不续期 |
+| POST | `/api/logout` | 会话令牌或 `HomeAuth` Cookie | 删除会话、清 Cookie（连带撤销 SSO/共享 cookie） |
 | GET | `/api/sessions` | 会话令牌 | 登录设备列表 |
 | PUT | `/api/sessions/{id}/name` | 会话令牌 | 重命名设备 |
 | DELETE | `/api/sessions/{id}` | 会话令牌 | 踢下线 |
@@ -219,19 +220,56 @@ curl -s 'http://localhost:19260/api/verify?token=<session-token>'
 | 401 | `invalid_token` | 令牌无效或过期 |
 | 503 | `redis_unavailable` | Redis 不可用 |
 
-### POST /api/logout
+### GET /api/me
 
-删除会话令牌，并连带撤销该会话派生出的 SSO/共享 cookie，最后异步通知 Auth Gateway 的 back-channel。
+只读查询 `HomeAuth` Cookie 的登录状态，供认证中心直接访问时的「已登录」页使用。
 
-- 鉴权：会话令牌。请求体：`token`（string，必填）。
-- 成功：`200 {"ok":true}`。
+- 鉴权：**只认** `HomeAuth` Cookie；不读 `?token=` / `X-Auth-Token` / Bearer。
+- 只读语义：不创建会话、不续期（`remember=1` 也不滑动 TTL）、不更新 `lastSeenAt`。
+- 成功：`200`，字段顺序如下：
+
+```json
+{"authenticated":true,"subject":"linden","displayName":"Linden",
+ "createdAt":1792498323,"expiresAt":1792501923,"remember":false}
+```
+
+`createdAt` / `expiresAt` 为 Unix 秒。`createdAt` 取会话元数据的 `createdAt`（毫秒转秒）或 SSO 记录的
+`auth_time`；`expiresAt = 当前时间 + Redis TTL`。`remember` 读会话 hash 的 `remember`，缺字段按 `true`。
 
 ```bash
+curl -s http://localhost:19260/api/me -H 'Cookie: HomeAuth=<session-or-sso-token>'
+```
+
+| 状态 | 响应 | 语义 |
+|---|---|---|
+| 200 | `{"authenticated":true,...}` | Cookie 对应有效会话 |
+| 401 | `{"authenticated":false}` | 无 Cookie / 会话无效或过期 |
+| 200 | `{"authenticated":false}` | Redis 不可用或读取出错；同时记一条 warn 日志，**不返回 5xx** |
+
+响应带 `Cache-Control: no-store`。
+
+### POST /api/logout
+
+删除会话令牌，并连带撤销该会话派生出的 SSO/共享 cookie，清 `HomeAuth` Cookie，最后异步通知
+Auth Gateway 的 back-channel。
+
+- 鉴权：会话令牌，取值顺序为 `?token=` → `X-Auth-Token` → `Authorization: Bearer` → 请求体 `token`
+  → `HomeAuth` Cookie。Cookie 通道是登录状态页的退出路径。
+- 成功：`200 {"ok":true,"message":"Session revoked"}`，并下发
+  `Set-Cookie: HomeAuth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`（HTTPS 部署另带 `Secure`）。
+  Cookie 在 Redis 不可用（503）时也会先被清掉。
+- 幂等：令牌不存在 / 已过期仍返回 200。
+
+```bash
+# 登录状态页：浏览器自带 Cookie
+curl -s -X POST http://localhost:19260/api/logout -b 'HomeAuth=<session-or-sso-token>'
+
+# 兼容旧调用：body 令牌
 curl -s -X POST http://localhost:19260/api/logout \
   -H 'Content-Type: application/json' -d '{"token":"<session-token>"}'
 ```
 
-副作用：删除 `auth:session:*`、`oidc:sso:<hash>` 及其反向索引，并 POST back-channel。
+副作用：删除 `auth:session:*`、`oidc:sso:<hash>` 及其反向索引，清 Cookie，并 POST back-channel。
 
 ### GET /api/sessions
 

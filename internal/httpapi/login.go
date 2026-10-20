@@ -132,13 +132,25 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, verifyBody{Ok: true, User: user, Exp: exp})
 }
 
-// handleLogout revokes a session and notifies the gateway's back-channel.
+// handleLogout revokes a session and notifies the gateway's back-channel. The
+// token may come from the standard channels or, for the landing page, straight
+// from the HttpOnly HomeAuth cookie.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Expire the browser copy even when the store is down: a dead cookie must
+	// not keep the login page in its "signed in" state.
+	s.oidc.ClearSessionCookie(w)
 	if !s.store.Available() {
 		writeJSON(w, http.StatusServiceUnavailable, errorBody{Code: "redis_unavailable", Message: "Session store unavailable"})
 		return
 	}
-	if token := tokenFrom(r); token != "" {
+	token := tokenFrom(r)
+	if token == "" {
+		token = strings.TrimSpace(bodyString(readJSONBody(r), "token"))
+	}
+	if token == "" {
+		token = s.oidc.CookieToken(r)
+	}
+	if token != "" {
 		sid, _, ok := s.revokeSession(r.Context(), token)
 		if ok {
 			go s.oidc.NotifyBackchannel(sid, s.subject)

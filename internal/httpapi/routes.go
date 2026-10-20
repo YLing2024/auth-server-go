@@ -21,6 +21,7 @@ const (
 	kindModuleLogin
 	kindModuleReset
 	kindVerify
+	kindMe
 	kindLogout
 	kindSessionList
 	kindSessionRename
@@ -60,6 +61,7 @@ var routeTable = []routeSpec{
 	{http.MethodPost, "/api/reset", kindModuleReset},
 
 	{http.MethodGet, "/api/verify", kindVerify},
+	{http.MethodGet, "/api/me", kindMe},
 	{http.MethodPost, "/api/logout", kindLogout},
 	{http.MethodGet, "/api/sessions", kindSessionList},
 	{http.MethodPut, "/api/sessions/{id}/name", kindSessionRename},
@@ -104,6 +106,8 @@ func (s *Server) handlerFor(k routeKind) http.HandlerFunc {
 		return s.handleModuleReset
 	case kindVerify:
 		return s.handleVerify
+	case kindMe:
+		return s.handleMe
 	case kindLogout:
 		return s.handleLogout
 	case kindSessionList:
