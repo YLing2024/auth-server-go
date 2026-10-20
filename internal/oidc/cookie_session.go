@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -106,8 +108,35 @@ func (p *Provider) readTTL(ctx context.Context, key string, remember bool) int {
 	return n
 }
 
-// ClearSessionCookie expires the HomeAuth cookie on the current host. Logout
-// calls it even when Redis is down so the browser stops presenting a dead token.
-func (p *Provider) ClearSessionCookie(w http.ResponseWriter) {
+// ClearSessionCookie expires the HomeAuth cookie on the current host and on any
+// registered client cookie domain that matches it. Logout calls it even when
+// Redis is down so the browser stops presenting a dead token.
+func (p *Provider) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	p.clearSsoCookie(w, "")
+	if p.registry == nil {
+		return
+	}
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	seen := map[string]bool{}
+	for _, client := range p.registry.Clients() {
+		domain := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(client.CookieDomain), "."))
+		if domain == "" || seen[domain] || !cookieDomainMatches(host, domain) {
+			continue
+		}
+		seen[domain] = true
+		p.clearSsoCookie(w, domain)
+	}
+}
+
+// cookieDomainMatches reports whether a Set-Cookie Domain value applies to host.
+func cookieDomainMatches(host, domain string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(domain), "."))
+	if host == "" || domain == "" {
+		return false
+	}
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }

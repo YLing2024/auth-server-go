@@ -245,6 +245,38 @@ func TestReadCookieSessionMissing(t *testing.T) {
 	}
 }
 
+// TestClearSessionCookieMatchesHostDomains pins the logout cookie cleanup: the
+// host-only copy plus exactly the configured parent domain, without leaking
+// unrelated client domains into the response.
+func TestClearSessionCookieMatchesHostDomains(t *testing.T) {
+	p := &Provider{
+		cookieName: "HomeAuth",
+		registry: &ClientRegistry{clients: map[string]*ClientRecord{
+			"a": {ClientID: "a", CookieDomain: ".example.com"},
+			"b": {ClientID: "b", CookieDomain: ".other.test"},
+			"c": {ClientID: "c", CookieDomain: "example.com"},
+		}},
+	}
+	rec := httptest.NewRecorder()
+	p.ClearSessionCookie(rec, httptest.NewRequest("POST", "http://auth.example.com/api/logout", nil))
+
+	got := rec.Header().Values("Set-Cookie")
+	if len(got) != 2 {
+		t.Fatalf("Set-Cookie count = %d (%v), want host-only + example.com", len(got), got)
+	}
+	if !strings.Contains(got[0], "HomeAuth=;") || strings.Contains(got[0], "Domain=") {
+		t.Errorf("first Set-Cookie = %q, want host-only deletion", got[0])
+	}
+	if !strings.Contains(got[1], "Domain=example.com") {
+		t.Errorf("second Set-Cookie = %q, want Domain=example.com", got[1])
+	}
+	for _, c := range got {
+		if !strings.Contains(c, "Max-Age=0") {
+			t.Errorf("Set-Cookie %q missing Max-Age=0", c)
+		}
+	}
+}
+
 // TestReadCookieSessionRedisDown makes sure an unreachable store becomes an
 // error the handler can turn into authenticated:false, not a 500.
 func TestReadCookieSessionRedisDown(t *testing.T) {

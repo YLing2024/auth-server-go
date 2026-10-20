@@ -138,7 +138,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Expire the browser copy even when the store is down: a dead cookie must
 	// not keep the login page in its "signed in" state.
-	s.oidc.ClearSessionCookie(w)
+	s.oidc.ClearSessionCookie(w, r)
 	if !s.store.Available() {
 		writeJSON(w, http.StatusServiceUnavailable, errorBody{Code: "redis_unavailable", Message: "Session store unavailable"})
 		return

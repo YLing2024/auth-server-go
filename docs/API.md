@@ -257,6 +257,7 @@ Auth Gateway 的 back-channel。
   → `HomeAuth` Cookie。Cookie 通道是登录状态页的退出路径。
 - 成功：`200 {"ok":true,"message":"Session revoked"}`，并下发
   `Set-Cookie: HomeAuth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`（HTTPS 部署另带 `Secure`）。
+  若当前主机命中 `clients.json` 中某客户端的 `cookie_domain`，另按该父域下发一条同样的过期 Cookie。
   Cookie 在 Redis 不可用（503）时也会先被清掉。
 - 幂等：令牌不存在 / 已过期仍返回 200。
 
