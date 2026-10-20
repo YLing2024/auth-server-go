@@ -67,6 +67,8 @@
 
 - `ACCESS_TTL_SEC` 非法（非数字）时：旧实现静默回落到 900；新实现**启动即报错**。
   `ACCESS_TTL_SEC < 60` 时两者都回落 900。这是刻意的 fail-fast，避免带着错误配置上线。
+- `SSO_RL_IP_MAX` / `SSO_RL_DEVICE_MAX` / `SSO_RL_GLOBAL_MAX` 非正整数时新实现启动即报错
+  （旧实现无这三个变量，始终按 IP 5 次）。属于同一套 fail-fast 策略。
 
 ### 3.5 登录页伺服方式
 
