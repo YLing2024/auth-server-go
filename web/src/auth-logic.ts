@@ -1,4 +1,4 @@
-// 登录页纯逻辑：回跳白名单 + 设备名推导。
+// 登录页纯逻辑：回跳白名单 + 设备名推导 + 裸访问状态页判定。
 // 从 public/index.html（改造前）逐条照搬，语义不得改动；单独成模块便于验证。
 
 declare global {
@@ -78,3 +78,91 @@ export function deviceName(): string {
   else if (/Linux/.test(ua)) name.push('Linux');
   return name.join(' · ').slice(0, 64);
 }
+
+/* ------------------------------------------------------------------ *
+ * 裸访问状态页：只有不带 OIDC 参数时才探测会话
+ * ------------------------------------------------------------------ */
+
+// 这些参数出现即代表处于 OIDC 流程，必须原样保留现有登录/跳转行为。
+// `redirect` 是 /authorize 未登录时下发的入口参数，也算流程参数。
+const OIDC_QUERY_PARAMS = ['client_id', 'redirect_uri', 'state', 'redirect'];
+
+export type MeInfo = {
+  authenticated: boolean;
+  subject?: string;
+  displayName?: string;
+  createdAt?: number;
+  expiresAt?: number;
+  remember?: boolean;
+};
+
+export type LandingView = 'checking' | 'login' | 'signed-in';
+
+// hasOidcParams 先于任何渲染判断执行：带参数时绝不因为"已登录"短路流程。
+export function hasOidcParams(search: string): boolean {
+  const params = new URLSearchParams(search);
+  return OIDC_QUERY_PARAMS.some((key) => params.has(key));
+}
+
+// landingView 是唯一决定渲染哪个视图的纯函数。
+// authenticated 为 null/undefined 表示 /api/me 尚未返回。
+export function landingView(
+  search: string,
+  authenticated: boolean | null | undefined
+): LandingView {
+  if (hasOidcParams(search)) return 'login';
+  if (authenticated === null || authenticated === undefined) return 'checking';
+  return authenticated ? 'signed-in' : 'login';
+}
+
+// formatDateTime 输出本地时区的 YYYY-MM-DD HH:mm；无效时间返回破折号。
+export function formatDateTime(unixSeconds: number | undefined): string {
+  if (!unixSeconds || !Number.isFinite(unixSeconds) || unixSeconds <= 0) return '—';
+  const d = new Date(unixSeconds * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    d.getFullYear() +
+    '-' +
+    pad(d.getMonth() + 1) +
+    '-' +
+    pad(d.getDate()) +
+    ' ' +
+    pad(d.getHours()) +
+    ':' +
+    pad(d.getMinutes())
+  );
+}
+
+// remainingMinutes 向上取整：还剩 11 分 30 秒时显示 12 分钟。
+export function remainingMinutes(expiresAt: number | undefined, nowSeconds: number): number {
+  if (!expiresAt || !Number.isFinite(expiresAt)) return 0;
+  return Math.max(0, Math.ceil((expiresAt - nowSeconds) / 60));
+}
+
+// rememberDays 用于"记住我"会话：只显示天数，不显示倒计时。
+export function rememberDays(expiresAt: number | undefined, nowSeconds: number): number {
+  if (!expiresAt || !Number.isFinite(expiresAt)) return 0;
+  return Math.max(0, Math.ceil((expiresAt - nowSeconds) / 86400));
+}
+
+// formatExpiry 生成"有效期至"右侧文案。
+export function formatExpiry(
+  expiresAt: number | undefined,
+  remember: boolean,
+  nowSeconds: number
+): string {
+  if (remember) {
+    const days = rememberDays(expiresAt, nowSeconds);
+    return days > 0 ? days + ' 天内免登录' : '已过期';
+  }
+  return formatDateTime(expiresAt) + '（还有 ' + remainingMinutes(expiresAt, nowSeconds) + ' 分钟）';
+}
+
+// isSessionExpired 只在拿到绝对到期时间时生效。
+export function isSessionExpired(
+  expiresAt: number | undefined,
+  nowSeconds: number
+): boolean {
+  return !!expiresAt && Number.isFinite(expiresAt) && expiresAt <= nowSeconds;
+}
+
